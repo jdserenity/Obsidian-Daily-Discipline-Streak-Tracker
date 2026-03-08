@@ -1,0 +1,350 @@
+/* Streak Tracker Plugin Styles */
+
+/* Hide Obsidian's code block edit button on hover */
+.markdown-rendered pre:has(.streak-tracker-container) {
+  position: relative;
+}
+
+.markdown-rendered pre:has(.streak-tracker-container)::before,
+.markdown-rendered pre:has(.streak-tracker-container)::after {
+  display: none !important;
+}
+
+.markdown-rendered pre:has(.streak-tracker-container):hover {
+  box-shadow: none !important;
+}
+
+.markdown-rendered .copy-code-button {
+  display: none !important;
+}
+
+/* Also try to hide the edit block button */
+.markdown-rendered pre:has(.streak-tracker-container) + .edit-block-button,
+.markdown-rendered .edit-block-button:has(+ pre .streak-tracker-container) {
+  display: none !important;
+}
+
+.streak-tracker-container {
+  padding: 16px;
+  font-family: var(--font-interface);
+}
+
+.streak-tracker-empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* Heatmap */
+.streak-heatmap-container {
+  margin-bottom: 20px;
+}
+
+.streak-heatmap-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.streak-nav-btn {
+  background: var(--background-modifier-border);
+  border: none;
+  border-radius: 4px;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  font-size: 1.2em;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.streak-nav-btn:hover:not(.streak-nav-btn-disabled) {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.streak-nav-btn-disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.streak-year-label {
+  font-weight: 600;
+  font-size: 1em;
+  color: var(--text-normal);
+  min-width: 50px;
+  text-align: center;
+}
+
+.streak-heatmap-months {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 2px;
+  margin-left: 28px;
+  margin-bottom: 4px;
+  font-size: 0.7em;
+  color: var(--text-muted);
+}
+
+.streak-heatmap-month {
+  text-align: center;
+}
+
+.streak-heatmap-wrapper {
+  display: flex;
+  gap: 4px;
+}
+
+.streak-heatmap-days {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.6em;
+  color: var(--text-muted);
+  width: 24px;
+  min-width: 24px;
+  text-align: right;
+  padding-right: 4px;
+}
+
+.streak-heatmap-day {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.streak-heatmap-grid {
+  display: flex;
+  flex: 1;
+  gap: 2px;
+}
+
+.streak-heatmap-week {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 2px;
+}
+
+.streak-heatmap-cell {
+  aspect-ratio: 1;
+  border-radius: 2px;
+  background: var(--background-modifier-border);
+  min-width: 0;
+}
+
+.streak-heatmap-cell:hover:not(.streak-heatmap-empty) {
+  outline: 1px solid var(--text-muted);
+  outline-offset: 1px;
+}
+
+.streak-heatmap-empty {
+  background: transparent;
+}
+
+/* Heatmap intensity levels - green theme by default */
+.streak-heatmap-level-0 {
+  background: var(--background-modifier-border);
+}
+
+.streak-heatmap-level-1 {
+  background: rgba(34, 197, 94, 0.2);
+}
+
+.streak-heatmap-level-2 {
+  background: rgba(34, 197, 94, 0.4);
+}
+
+.streak-heatmap-level-3 {
+  background: rgba(34, 197, 94, 0.6);
+}
+
+.streak-heatmap-level-4 {
+  background: rgba(34, 197, 94, 0.8);
+}
+
+.streak-heatmap-level-5 {
+  background: rgb(34, 197, 94);
+}
+
+/* Dark theme adjustments */
+.theme-dark .streak-heatmap-level-1 {
+  background: rgba(34, 197, 94, 0.15);
+}
+
+.theme-dark .streak-heatmap-level-2 {
+  background: rgba(34, 197, 94, 0.3);
+}
+
+.theme-dark .streak-heatmap-level-3 {
+  background: rgba(34, 197, 94, 0.5);
+}
+
+.theme-dark .streak-heatmap-level-4 {
+  background: rgba(34, 197, 94, 0.7);
+}
+
+.theme-dark .streak-heatmap-level-5 {
+  background: rgb(34, 197, 94);
+}
+
+/* Activities */
+.streak-activities {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.streak-activity {
+  background: var(--background-secondary);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.streak-activity-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.streak-activity-name {
+  font-weight: 600;
+  font-size: 1em;
+  color: var(--text-normal);
+  flex-shrink: 0;
+  --streak-link-color: #8b5cf6;
+}
+
+.streak-activity-name.clickable {
+  cursor: pointer;
+}
+
+.streak-activity-name.clickable:hover {
+  color: var(--text-accent);
+}
+
+/* Activity name with links */
+.streak-activity-name.clickable-parts {
+  cursor: default;
+}
+
+.streak-name-text,
+.streak-name-link {
+  cursor: pointer;
+}
+
+/* On hover of the whole name, both parts change color */
+.streak-activity-name.clickable-parts:hover .streak-name-text {
+  color: var(--text-accent);
+}
+
+.streak-activity-name.clickable-parts:hover .streak-name-link {
+  color: var(--streak-link-color);
+}
+
+.streak-activity-description {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--background-primary);
+  border-radius: 4px;
+  border-left: 3px solid var(--text-accent);
+}
+
+.streak-activity-description.collapsed {
+  display: none;
+}
+
+.streak-activity-description p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.9em;
+  line-height: 1.5;
+}
+
+/* Stats - pushed to the right */
+.streak-stats {
+  display: flex;
+  gap: 12px;
+  font-size: 0.85em;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.streak-stat {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.streak-current {
+  color: var(--text-normal);
+}
+
+/* Inline Buttons (checkmark and X) */
+.streak-buttons {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.streak-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-size: 1em;
+  font-weight: 600;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.streak-btn-success {
+  background: var(--background-modifier-border);
+  color: var(--text-muted);
+}
+
+.streak-btn-success:hover {
+  background: rgba(34, 197, 94, 0.2);
+  color: rgb(34, 197, 94);
+}
+
+.streak-btn-success.streak-btn-active {
+  background: rgb(34, 197, 94);
+  color: white;
+}
+
+.streak-btn-fail {
+  background: var(--background-modifier-border);
+  color: var(--text-muted);
+}
+
+.streak-btn-fail:hover {
+  background: rgba(239, 68, 68, 0.2);
+  color: rgb(239, 68, 68);
+}
+
+.streak-btn-fail.streak-btn-active {
+  background: rgb(239, 68, 68);
+  color: white;
+}
+
+/* Responsive adjustments */
+@media (max-width: 500px) {
+  .streak-activity-header {
+    flex-wrap: wrap;
+  }
+
+  .streak-stats {
+    margin-left: 0;
+    width: 100%;
+    margin-top: 6px;
+    padding-left: 60px;
+  }
+}

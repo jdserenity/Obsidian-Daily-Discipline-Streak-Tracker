@@ -1,0 +1,9 @@
+{
+  "id": "streak-tracker",
+  "name": "Streak Tracker",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Track daily activities with streaks and contribution heatmap",
+  "author": "jd",
+  "isDesktopOnly": false
+}
