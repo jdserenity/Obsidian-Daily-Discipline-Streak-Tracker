@@ -460,7 +460,6 @@ class StreakTrackerPlugin extends Plugin {
         this._trackerElements.delete(el);
         continue;
       }
-      el.empty();
       await this.renderTracker(el);
     }
   }
@@ -501,31 +500,36 @@ class StreakTrackerPlugin extends Plugin {
     this._trackerElements.add(el);
 
     const config = await this.loadActivityConfig();
-    const container = el.createDiv({ cls: "streak-tracker-container" });
+    
+    // Render into a detached container first to avoid scroll jumps
+    const container = document.createElement("div");
+    container.className = "streak-tracker-container";
 
     if (config.activities.length === 0) {
       container.createEl("p", {
         text: "No activities configured. Create an Archive/streak-tracker-config.md file in your vault.",
         cls: "streak-tracker-empty"
       });
-      return;
+    } else {
+      const currentDay = this.getCurrentDay();
+      const currentLog = this.data.logs[currentDay] || {};
+
+      // Get current year for heatmap
+      const currentYear = new Date().getFullYear();
+
+      // Render heatmap first (above activities)
+      this.renderHeatmap(container, config.activities, currentYear);
+
+      // Render activities
+      const activitiesContainer = container.createDiv({ cls: "streak-activities" });
+
+      for (const activity of config.activities) {
+        this.renderActivity(activitiesContainer, activity, currentLog[activity.id]);
+      }
     }
 
-    const currentDay = this.getCurrentDay();
-    const currentLog = this.data.logs[currentDay] || {};
-
-    // Get current year for heatmap
-    const currentYear = new Date().getFullYear();
-
-    // Render heatmap first (above activities)
-    this.renderHeatmap(container, config.activities, currentYear);
-
-    // Render activities
-    const activitiesContainer = container.createDiv({ cls: "streak-activities" });
-
-    for (const activity of config.activities) {
-      this.renderActivity(activitiesContainer, activity, currentLog[activity.id]);
-    }
+    // Atomic update
+    el.replaceChildren(container);
   }
 
   renderActivity(container, activity, currentState) {
@@ -551,7 +555,6 @@ class StreakTrackerPlugin extends Plugin {
       const trackerEl = container.closest(".streak-tracker-container");
       if (trackerEl) {
         const parentEl = trackerEl.parentElement;
-        parentEl.empty();
         await this.renderTracker(parentEl);
       }
     });
@@ -571,7 +574,6 @@ class StreakTrackerPlugin extends Plugin {
         const trackerEl = container.closest(".streak-tracker-container");
         if (trackerEl) {
           const parentEl = trackerEl.parentElement;
-          parentEl.empty();
           await this.renderTracker(parentEl);
         }
       });
@@ -657,8 +659,9 @@ class StreakTrackerPlugin extends Plugin {
     });
   }
 
-  renderHeatmap(container, activities, year) {
-    const heatmapContainer = container.createDiv({ cls: "streak-heatmap-container" });
+  renderHeatmap(container, activities, year, replaceEl = null) {
+    const heatmapContainer = document.createElement("div");
+    heatmapContainer.className = "streak-heatmap-container";
 
     // Year navigation - only show if more than one year of data
     const yearsWithData = this.getYearsWithData();
@@ -691,9 +694,7 @@ class StreakTrackerPlugin extends Plugin {
         nextBtn.classList.add("streak-nav-btn-disabled");
       } else {
         nextBtn.addEventListener("click", () => {
-          heatmapContainer.empty();
-          this.renderHeatmap(container, activities, year + 1);
-          heatmapContainer.remove();
+          this.renderHeatmap(container, activities, year + 1, heatmapContainer);
         });
       }
 
@@ -703,9 +704,7 @@ class StreakTrackerPlugin extends Plugin {
         prevBtn.classList.add("streak-nav-btn-disabled");
       } else {
         prevBtn.addEventListener("click", () => {
-          heatmapContainer.empty();
-          this.renderHeatmap(container, activities, year - 1);
-          heatmapContainer.remove();
+          this.renderHeatmap(container, activities, year - 1, heatmapContainer);
         });
       }
     }
@@ -806,6 +805,12 @@ class StreakTrackerPlugin extends Plugin {
 
         currentDate.setDate(currentDate.getDate() + 1);
       }
+    }
+
+    if (replaceEl) {
+      replaceEl.replaceWith(heatmapContainer);
+    } else {
+      container.appendChild(heatmapContainer);
     }
   }
 
