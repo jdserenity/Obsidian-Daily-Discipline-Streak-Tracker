@@ -296,6 +296,10 @@
   color: rgb(34, 197, 94);
 }
 
+.streak-rate-red {
+  color: rgb(239, 68, 68);
+}
+
 /* Inline Buttons (checkmark and X) */
 .streak-buttons {
   display: flex;

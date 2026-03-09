@@ -661,6 +661,8 @@ class StreakTrackerPlugin extends Plugin {
       rateColorCls = " streak-rate-green";
     } else if (successRate >= 0.75) {
       rateColorCls = " streak-rate-orange";
+    } else if (successRate < 0.30) {
+      rateColorCls = " streak-rate-red";
     }
 
     const totalEl = statsEl.createEl("span", {
