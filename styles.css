@@ -393,3 +393,24 @@
     padding-left: 60px;
   }
 }
+
+/* Mobile-only layout: uniform 2-line activity cards */
+.is-mobile .streak-activity-header {
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* Name always shares line 1 with buttons — shrinks as needed, never wraps below */
+.is-mobile .streak-activity-name {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* Stats always on line 2, left-aligned */
+.is-mobile .streak-stats {
+  flex: 0 0 100%;
+  width: 100%;
+  margin-left: 0;
+  margin-top: 6px;
+  padding-left: 0;
+}
