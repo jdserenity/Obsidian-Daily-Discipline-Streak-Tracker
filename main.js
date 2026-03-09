@@ -21,6 +21,7 @@ class StreakTrackerPlugin extends Plugin {
     this._trackerElements = new Set();
     this._lastSaveTime = 0;
     this._reloadTimeout = null;
+    this.activityConfigMap = {}; // id → activity object, populated on config load
 
     await this.loadPluginData();
 
@@ -287,28 +288,50 @@ class StreakTrackerPlugin extends Plugin {
     return Math.floor((d2 - d1) / (1000 * 60 * 60 * 24)) + 1;
   }
 
-  async saveLog(activityId, state) {
+  // Returns the YYYY-MM-DD string for the Monday of the ISO week containing dateStr
+  getISOWeekStart(dateStr) {
+    const d = this.parseDate(dateStr);
+    const day = d.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+    const diff = day === 0 ? -6 : 1 - day;
+    d.setDate(d.getDate() + diff);
+    return this.formatDate(d);
+  }
+
+  // Returns array of 7 YYYY-MM-DD strings (Mon–Sun) for the week starting at weekStartStr
+  getWeekDays(weekStartStr) {
+    const days = [];
+    const d = this.parseDate(weekStartStr);
+    for (let i = 0; i < 7; i++) {
+      days.push(this.formatDate(d));
+      d.setDate(d.getDate() + 1);
+    }
+    return days;
+  }
+
+  // dayStr is optional — defaults to today. Pass a specific YYYY-MM-DD to remove
+  // a past session (used when deselecting a weekly activity checkmark).
+  async saveLog(activityId, state, dayStr = null) {
     // If vault data wasn't loaded at startup (common on mobile where file index
     // isn't ready), try loading it now before we write anything
     if (!this.vaultDataLoaded) {
       await this.loadVaultData();
     }
     this.vaultDataLoaded = true; // Explicit user action = real data worth saving
-    const currentDay = this.getCurrentDay();
+    const targetDay = dayStr || this.getCurrentDay();
 
-    if (!this.data.logs[currentDay]) {
-      this.data.logs[currentDay] = {};
+    if (!this.data.logs[targetDay]) {
+      this.data.logs[targetDay] = {};
     }
 
     // Track start date for this activity if not already set
     if (!this.data.activityStartDates[activityId]) {
-      this.data.activityStartDates[activityId] = currentDay;
+      this.data.activityStartDates[activityId] = targetDay;
     }
 
     if (state === "none") {
-      delete this.data.logs[currentDay][activityId];
+      delete this.data.logs[targetDay][activityId];
     } else {
-      this.data.logs[currentDay][activityId] = state;
+      this.data.logs[targetDay][activityId] = state;
     }
 
     this.calculateStats(activityId);
@@ -341,6 +364,12 @@ class StreakTrackerPlugin extends Plugin {
   }
 
   calculateStats(activityId) {
+    const activity = this.activityConfigMap?.[activityId];
+    if (activity?.frequency === "weekly") {
+      this.calculateWeeklyStats(activityId, activity.weeklyTarget || 1);
+      return;
+    }
+
     const logs = this.data.logs;
 
     let currentStreak = 0;
@@ -444,6 +473,85 @@ class StreakTrackerPlugin extends Plugin {
     };
   }
 
+  calculateWeeklyStats(activityId, weeklyTarget) {
+    const logs = this.data.logs;
+    const today = this.getCurrentDay();
+
+    // Ensure start date is set
+    let startDate = this.data.activityStartDates[activityId];
+    if (!startDate) {
+      const datesWithActivity = Object.keys(logs)
+        .filter(date => logs[date][activityId] !== undefined)
+        .sort();
+      if (datesWithActivity.length > 0) {
+        startDate = datesWithActivity[0];
+        this.data.activityStartDates[activityId] = startDate;
+      }
+    }
+
+    if (!startDate) {
+      this.data.stats[activityId] = {
+        currentStreak: 0, longestStreak: 0,
+        totalSuccesses: 0, totalDays: 0,
+        weeklySuccesses: 0, weeklyTarget, isWeekly: true
+      };
+      return;
+    }
+
+    // Count all individual sessions ever
+    let totalSuccesses = 0;
+    for (const date of Object.keys(logs)) {
+      if (logs[date][activityId] === "success") totalSuccesses++;
+    }
+
+    // Enumerate all complete ISO weeks from start through last week
+    // (current week is in-progress and never counts toward/against streak)
+    const currentWeekStart = this.getISOWeekStart(today);
+    const startWeekStart = this.getISOWeekStart(startDate);
+
+    let currentStreak = 0;
+    let longestStreak = 0;
+    let weeklySuccesses = 0;
+    let totalWeeks = 0;
+    let tempStreak = 0;
+
+    let wStart = startWeekStart;
+    while (wStart < currentWeekStart) {
+      const weekDays = this.getWeekDays(wStart);
+      let sessions = 0;
+      for (const day of weekDays) {
+        if (logs[day] && logs[day][activityId] === "success") sessions++;
+      }
+
+      totalWeeks++;
+      if (sessions >= weeklyTarget) {
+        weeklySuccesses++;
+        tempStreak++;
+        if (tempStreak > longestStreak) longestStreak = tempStreak;
+      } else {
+        tempStreak = 0;
+      }
+
+      // Advance to next week
+      const next = this.parseDate(wStart);
+      next.setDate(next.getDate() + 7);
+      wStart = this.formatDate(next);
+    }
+    currentStreak = tempStreak; // the run ending at the most recent complete week
+
+    if (currentStreak > longestStreak) longestStreak = currentStreak;
+
+    this.data.stats[activityId] = {
+      currentStreak,
+      longestStreak,
+      totalSuccesses,
+      totalDays: totalWeeks,     // reuse field: total complete weeks tracked
+      weeklySuccesses,           // weeks where target was met
+      weeklyTarget,
+      isWeekly: true
+    };
+  }
+
   checkDayChange() {
     const currentDay = this.getCurrentDay();
     if (currentDay !== this.lastCheckedDay) {
@@ -500,7 +608,13 @@ class StreakTrackerPlugin extends Plugin {
     this._trackerElements.add(el);
 
     const config = await this.loadActivityConfig();
-    
+
+    // Keep activityConfigMap in sync so calculateStats can find frequency info
+    this.activityConfigMap = {};
+    for (const a of config.activities) {
+      this.activityConfigMap[a.id] = a;
+    }
+
     // Render into a detached container first to avoid scroll jumps
     const container = document.createElement("div");
     container.className = "streak-tracker-container";
@@ -533,6 +647,14 @@ class StreakTrackerPlugin extends Plugin {
   }
 
   renderActivity(container, activity, currentState) {
+    if (activity.frequency === "weekly") {
+      this.renderWeeklyActivity(container, activity);
+    } else {
+      this.renderDailyActivity(container, activity, currentState);
+    }
+  }
+
+  renderDailyActivity(container, activity, currentState) {
     const activityEl = container.createDiv({ cls: "streak-activity" });
 
     // Header row with buttons, name, and stats all inline
@@ -551,12 +673,8 @@ class StreakTrackerPlugin extends Plugin {
       const newState = currentState === "success" ? "none" : "success";
       await this.saveLog(activity.id, newState);
 
-      // Refresh the view
       const trackerEl = container.closest(".streak-tracker-container");
-      if (trackerEl) {
-        const parentEl = trackerEl.parentElement;
-        await this.renderTracker(parentEl);
-      }
+      if (trackerEl) await this.renderTracker(trackerEl.parentElement);
     });
 
     if (activity.canFail) {
@@ -570,15 +688,60 @@ class StreakTrackerPlugin extends Plugin {
         const newState = currentState === "failed" ? "none" : "failed";
         await this.saveLog(activity.id, newState);
 
-        // Refresh the view
         const trackerEl = container.closest(".streak-tracker-container");
-        if (trackerEl) {
-          const parentEl = trackerEl.parentElement;
-          await this.renderTracker(parentEl);
-        }
+        if (trackerEl) await this.renderTracker(trackerEl.parentElement);
       });
     }
 
+    this.renderActivityNameAndStats(activityEl, headerRow, activity, "daily");
+  }
+
+  renderWeeklyActivity(container, activity) {
+    const weeklyTarget = activity.weeklyTarget || 1;
+    const today = this.getCurrentDay();
+    const weekStart = this.getISOWeekStart(today);
+    const weekDays = this.getWeekDays(weekStart);
+
+    // Sessions logged this week, in chronological order
+    const sessionsThisWeek = weekDays.filter(
+      day => this.data.logs[day] && this.data.logs[day][activity.id] === "success"
+    );
+    const sessionCount = sessionsThisWeek.length;
+    const todayLogged = sessionsThisWeek.includes(today);
+
+    const activityEl = container.createDiv({ cls: "streak-activity" });
+    const headerRow = activityEl.createDiv({ cls: "streak-activity-header" });
+    const buttonsEl = headerRow.createDiv({ cls: "streak-buttons streak-buttons-weekly" });
+
+    for (let i = 0; i < weeklyTarget; i++) {
+      const isActive = i < sessionCount;
+      const btn = buttonsEl.createEl("button", {
+        text: "✓",
+        cls: `streak-btn streak-btn-success ${isActive ? "streak-btn-active" : ""}`,
+        attr: { title: isActive ? "Deselect this session" : "Log a session" }
+      });
+
+      const idx = i; // capture for closure
+      btn.addEventListener("click", async () => {
+        if (idx < sessionsThisWeek.length) {
+          // Deselect: remove the session at this position
+          await this.saveLog(activity.id, "none", sessionsThisWeek[idx]);
+        } else {
+          // Select: add today's session (one session per day max)
+          if (todayLogged) return;
+          await this.saveLog(activity.id, "success", today);
+        }
+        const trackerEl = container.closest(".streak-tracker-container");
+        if (trackerEl) await this.renderTracker(trackerEl.parentElement);
+      });
+    }
+
+    this.renderActivityNameAndStats(activityEl, headerRow, activity, "weekly", sessionCount, weeklyTarget);
+  }
+
+  // Shared helper: renders the activity name (with links/description) and stats area.
+  // mode is "daily" or "weekly". weekSessionCount and weeklyTarget only used in weekly mode.
+  renderActivityNameAndStats(activityEl, headerRow, activity, mode, weekSessionCount = 0, weeklyTarget = 1) {
     // Activity name with link support
     const nameEl = headerRow.createDiv({ cls: "streak-activity-name" });
     const nameParts = this.parseNameWithLinks(activity.name);
@@ -623,7 +786,6 @@ class StreakTrackerPlugin extends Plugin {
       }
     }
 
-    // If has description but no links, make whole name clickable
     if (activity.description && !hasLinks) {
       nameEl.classList.add("clickable");
       nameEl.addEventListener("click", () => {
@@ -635,32 +797,58 @@ class StreakTrackerPlugin extends Plugin {
 
     // Stats display
     const stats = this.data.stats[activity.id] || {
-      currentStreak: 0,
-      longestStreak: 0,
-      totalSuccesses: 0,
-      totalDays: 0
+      currentStreak: 0, longestStreak: 0,
+      totalSuccesses: 0, totalDays: 0
     };
 
     const statsEl = headerRow.createDiv({ cls: "streak-stats" });
-    statsEl.createEl("span", {
-      text: `🔥 ${stats.currentStreak}`,
-      cls: "streak-stat streak-current",
-      attr: { title: "Current streak" }
-    });
-    statsEl.createEl("span", {
-      text: `🔗 ${stats.longestStreak}`,
-      cls: "streak-stat streak-longest",
-      attr: { title: "Longest streak" }
-    });
 
-    const successRate = stats.totalDays > 0 ? stats.totalSuccesses / stats.totalDays : 0;
-    const successRateText = successRate.toFixed(2);
+    if (mode === "weekly") {
+      // Weekly stats: streaks are in weeks, rate is successful-weeks/total-weeks
+      const weeklySuccesses = stats.weeklySuccesses ?? 0;
+      const totalWeeks = stats.totalDays ?? 0;
+      const weekRate = totalWeeks > 0 ? (weeklySuccesses / totalWeeks).toFixed(2) : "0.00";
 
-    statsEl.createEl("span", {
-      text: `✅ ${stats.totalSuccesses}/${stats.totalDays} : ${successRateText}%`,
-      cls: "streak-stat streak-total",
-      attr: { title: "Total successes / Total days tracked" }
-    });
+      statsEl.createEl("span", {
+        text: `🔥 ${stats.currentStreak}`,
+        cls: "streak-stat streak-current",
+        attr: { title: "Current streak (weeks)" }
+      });
+      statsEl.createEl("span", {
+        text: `🔗 ${stats.longestStreak}`,
+        cls: "streak-stat streak-longest",
+        attr: { title: "Longest streak (weeks)" }
+      });
+      statsEl.createEl("span", {
+        text: `✅ ${weeklySuccesses}/${totalWeeks} : ${weekRate}%`,
+        cls: "streak-stat streak-total",
+        attr: { title: "Weeks target met / Total weeks tracked" }
+      });
+      statsEl.createEl("span", {
+        text: `${weekSessionCount}/${weeklyTarget} this week`,
+        cls: "streak-stat streak-week-progress",
+        attr: { title: "Sessions logged this week" }
+      });
+    } else {
+      // Daily stats (unchanged)
+      const successRate = stats.totalDays > 0 ? stats.totalSuccesses / stats.totalDays : 0;
+
+      statsEl.createEl("span", {
+        text: `🔥 ${stats.currentStreak}`,
+        cls: "streak-stat streak-current",
+        attr: { title: "Current streak" }
+      });
+      statsEl.createEl("span", {
+        text: `🔗 ${stats.longestStreak}`,
+        cls: "streak-stat streak-longest",
+        attr: { title: "Longest streak" }
+      });
+      statsEl.createEl("span", {
+        text: `✅ ${stats.totalSuccesses}/${stats.totalDays} : ${successRate.toFixed(2)}%`,
+        cls: "streak-stat streak-total",
+        attr: { title: "Total successes / Total days tracked" }
+      });
+    }
   }
 
   renderHeatmap(container, activities, year, replaceEl = null) {

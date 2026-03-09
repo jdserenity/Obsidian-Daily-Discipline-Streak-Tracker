@@ -340,6 +340,17 @@
   color: white;
 }
 
+/* Weekly activity "this week" progress stat */
+.streak-week-progress {
+  color: var(--text-accent);
+  font-weight: 600;
+}
+
+/* Weekly buttons: slightly tighter gap so N buttons don't sprawl */
+.streak-buttons-weekly {
+  gap: 3px;
+}
+
 /* Responsive adjustments */
 @media (max-width: 500px) {
   .streak-activity-header {
