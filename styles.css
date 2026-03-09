@@ -209,13 +209,18 @@
   display: flex;
   align-items: center;
   gap: 12px;
+  overflow: hidden;
 }
 
 .streak-activity-name {
   font-weight: 600;
   font-size: 1em;
   color: var(--text-normal);
-  flex-shrink: 0;
+  flex-grow: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   --streak-link-color: #8b5cf6;
 }
 

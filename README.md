@@ -122,7 +122,7 @@ Access via **Settings → Streak Tracker**:
 
 - 🔥 **Current Streak**: Consecutive days of success ending today
 - ⭐ **Longest Streak**: Your best streak ever
-- ✅ **Success Rate**: Total successes / Total days since you started tracking
+- ✅ **Success Rate**: Total successes / Total days tracked, followed by the percentage (e.g., `18/21 : 0.86%`)
 
 **Important**: `totalDays` counts every day from when you first tracked an activity until today. If you miss a day (don't click anything), it still counts as a day - just not a success. This updates automatically when you open Obsidian, even if it's been closed for a week.
 
