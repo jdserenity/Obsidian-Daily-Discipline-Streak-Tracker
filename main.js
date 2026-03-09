@@ -650,8 +650,12 @@ class StreakTrackerPlugin extends Plugin {
       cls: "streak-stat streak-longest",
       attr: { title: "Longest streak" }
     });
+
+    const successRate = stats.totalDays > 0 ? stats.totalSuccesses / stats.totalDays : 0;
+    const successRateText = successRate.toFixed(2);
+
     statsEl.createEl("span", {
-      text: `✅ ${stats.totalSuccesses}/${stats.totalDays}`,
+      text: `✅ ${stats.totalSuccesses}/${stats.totalDays} : ${successRateText}%`,
       cls: "streak-stat streak-total",
       attr: { title: "Total successes / Total days tracked" }
     });
