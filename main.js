@@ -252,6 +252,18 @@ class StreakTrackerPlugin extends Plugin {
     }
   }
 
+  async saveActivityConfig(config) {
+    const configPath = this.data.settings.configFilePath || "Archive/streak-tracker-config.md";
+    const content = JSON.stringify(config, null, 2);
+    this._lastSaveTime = Date.now(); // Suppress self-triggered file watcher reload
+    const file = this.app.vault.getAbstractFileByPath(configPath);
+    if (file) {
+      await this.app.vault.modify(file, content);
+    } else {
+      await this.app.vault.adapter.write(configPath, content);
+    }
+  }
+
   getCurrentDay() {
     const now = new Date();
     const [endHour, endMinute] = (this.data.settings.dayEndTime || "06:59").split(":").map(Number);
@@ -595,7 +607,14 @@ class StreakTrackerPlugin extends Plugin {
       descriptionEl = activityEl.createDiv({
         cls: "streak-activity-description collapsed"
       });
-      descriptionEl.createEl("p", { text: activity.description });
+      const descTextEl = descriptionEl.createEl("p", {
+        text: activity.description,
+        attr: { title: "Double-click to edit" }
+      });
+      descTextEl.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        this.enterDescriptionEditMode(descriptionEl, descTextEl, activity);
+      });
     }
 
     // Render name parts
@@ -673,6 +692,63 @@ class StreakTrackerPlugin extends Plugin {
     totalEl.createEl("span", {
       text: `${successRateText}%`,
       cls: rateColorCls.trim()
+    });
+  }
+
+  enterDescriptionEditMode(descriptionEl, descTextEl, activity) {
+    const originalText = activity.description || "";
+    const textarea = document.createElement("textarea");
+    textarea.className = "streak-description-editor";
+    textarea.value = originalText;
+    descTextEl.replaceWith(textarea);
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+
+    const restoreText = (text) => {
+      const p = document.createElement("p");
+      p.textContent = text;
+      p.title = "Double-click to edit";
+      p.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        activity.description = text;
+        this.enterDescriptionEditMode(descriptionEl, p, activity);
+      });
+      textarea.replaceWith(p);
+    };
+
+    const commit = async () => {
+      const newText = textarea.value.trim();
+      if (newText !== originalText) {
+        const config = await this.loadActivityConfig();
+        const act = config.activities.find(a => a.id === activity.id);
+        if (act) {
+          if (newText) {
+            act.description = newText;
+          } else {
+            delete act.description;
+          }
+          await this.saveActivityConfig(config);
+          activity.description = newText;
+        }
+      }
+      restoreText(newText || originalText);
+    };
+
+    const revert = () => {
+      restoreText(originalText);
+    };
+
+    textarea.addEventListener("blur", commit);
+    textarea.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        textarea.removeEventListener("blur", commit);
+        revert();
+      } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        textarea.removeEventListener("blur", commit);
+        commit();
+      }
     });
   }
 
