@@ -663,10 +663,14 @@ class StreakTrackerPlugin extends Plugin {
       rateColorCls = " streak-rate-orange";
     }
 
-    statsEl.createEl("span", {
-      text: `✅ ${stats.totalSuccesses}/${stats.totalDays} : ${successRateText}%`,
-      cls: `streak-stat streak-total${rateColorCls}`,
+    const totalEl = statsEl.createEl("span", {
+      cls: "streak-stat streak-total",
       attr: { title: "Total successes / Total days tracked" }
+    });
+    totalEl.appendText(`✅ ${stats.totalSuccesses}/${stats.totalDays} : `);
+    totalEl.createEl("span", {
+      text: `${successRateText}%`,
+      cls: rateColorCls.trim()
     });
   }
 
