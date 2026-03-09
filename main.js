@@ -869,24 +869,6 @@ class StreakTrackerPlugin extends Plugin {
       });
     }
     
-    let rateColorCls = "";
-    if (successRate >= 0.95) {
-      rateColorCls = " streak-rate-green";
-    } else if (successRate >= 0.75) {
-      rateColorCls = " streak-rate-orange";
-    } else if (successRate < 0.30) {
-      rateColorCls = " streak-rate-red";
-    }
-
-    const totalEl = statsEl.createEl("span", {
-      cls: "streak-stat streak-total",
-      attr: { title: "Total successes / Total days tracked" }
-    });
-    totalEl.appendText(`✅ ${stats.totalSuccesses}/${stats.totalDays} : `);
-    totalEl.createEl("span", {
-      text: `${successRateText}%`,
-      cls: rateColorCls.trim()
-    });
   }
 
   enterDescriptionEditMode(descriptionEl, descTextEl, activity) {
