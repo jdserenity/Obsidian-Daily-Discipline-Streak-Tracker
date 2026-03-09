@@ -656,9 +656,16 @@ class StreakTrackerPlugin extends Plugin {
     const successRate = stats.totalDays > 0 ? stats.totalSuccesses / stats.totalDays : 0;
     const successRateText = successRate.toFixed(2);
 
+    let rateColorCls = "";
+    if (successRate >= 0.95) {
+      rateColorCls = " streak-rate-green";
+    } else if (successRate >= 0.75) {
+      rateColorCls = " streak-rate-orange";
+    }
+
     statsEl.createEl("span", {
       text: `✅ ${stats.totalSuccesses}/${stats.totalDays} : ${successRateText}%`,
-      cls: "streak-stat streak-total",
+      cls: `streak-stat streak-total${rateColorCls}`,
       attr: { title: "Total successes / Total days tracked" }
     });
   }
