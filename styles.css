@@ -280,7 +280,7 @@
 }
 
 .streak-stat {
-  color: var(--text-muted);
+  color: var(--text-normal);
   white-space: nowrap;
 }
 
