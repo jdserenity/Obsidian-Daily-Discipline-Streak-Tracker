@@ -771,9 +771,9 @@ class StreakTrackerPlugin extends Plugin {
         cls: "streak-activity-description collapsed"
       });
       const descTextEl = descriptionEl.createEl("p", {
-        text: activity.description,
         attr: { title: "Double-click to edit" }
       });
+      this.renderDescriptionText(descTextEl, activity.description);
       descTextEl.addEventListener("dblclick", (e) => {
         e.stopPropagation();
         this.enterDescriptionEditMode(descriptionEl, descTextEl, activity);
@@ -849,8 +849,17 @@ class StreakTrackerPlugin extends Plugin {
         attr: { title: "Sessions logged this week" }
       });
     } else {
-      // Daily stats (unchanged)
+      // Daily stats
       const successRate = stats.totalDays > 0 ? stats.totalSuccesses / stats.totalDays : 0;
+
+      let rateColorCls = "";
+      if (successRate >= 0.95) {
+        rateColorCls = "streak-rate-green";
+      } else if (successRate >= 0.75) {
+        rateColorCls = "streak-rate-orange";
+      } else if (successRate < 0.30) {
+        rateColorCls = "streak-rate-red";
+      }
 
       statsEl.createEl("span", {
         text: `🔥 ${stats.currentStreak}`,
@@ -862,13 +871,16 @@ class StreakTrackerPlugin extends Plugin {
         cls: "streak-stat streak-longest",
         attr: { title: "Longest streak" }
       });
-      statsEl.createEl("span", {
-        text: `✅ ${stats.totalSuccesses}/${stats.totalDays} : ${successRate.toFixed(2)}%`,
+      const totalEl = statsEl.createEl("span", {
         cls: "streak-stat streak-total",
         attr: { title: "Total successes / Total days tracked" }
       });
+      totalEl.appendText(`✅ ${stats.totalSuccesses}/${stats.totalDays} : `);
+      totalEl.createEl("span", {
+        text: `${successRate.toFixed(2)}%`,
+        cls: rateColorCls
+      });
     }
-    
   }
 
   enterDescriptionEditMode(descriptionEl, descTextEl, activity) {
@@ -882,8 +894,8 @@ class StreakTrackerPlugin extends Plugin {
 
     const restoreText = (text) => {
       const p = document.createElement("p");
-      p.textContent = text;
       p.title = "Double-click to edit";
+      this.renderDescriptionText(p, text);
       p.addEventListener("dblclick", (e) => {
         e.stopPropagation();
         activity.description = text;
@@ -1088,6 +1100,34 @@ class StreakTrackerPlugin extends Plugin {
     const g = parseInt(hex.slice(3, 5), 16);
     const b = parseInt(hex.slice(5, 7), 16);
     return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  renderDescriptionText(el, text) {
+    while (el.firstChild) el.removeChild(el.firstChild);
+    const lines = (text || "").split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const parts = this.parseNameWithLinks(lines[i]);
+      for (const part of parts) {
+        if (part.isLink) {
+          const span = document.createElement("span");
+          span.textContent = part.display;
+          span.className = "streak-name-link";
+          if (this.data.settings.linkColor) {
+            span.style.setProperty("--streak-link-color", this.data.settings.linkColor);
+          }
+          span.addEventListener("click", (e) => {
+            e.stopPropagation();
+            this.app.workspace.openLinkText(part.target, "");
+          });
+          el.appendChild(span);
+        } else if (part.text) {
+          el.appendChild(document.createTextNode(part.text));
+        }
+      }
+      if (i < lines.length - 1) {
+        el.appendChild(document.createElement("br"));
+      }
+    }
   }
 
   parseNameWithLinks(name) {

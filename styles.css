@@ -271,6 +271,17 @@
   cursor: text;
 }
 
+.streak-activity-description .streak-name-link {
+  color: var(--streak-link-color);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  cursor: pointer;
+}
+
+.streak-activity-description .streak-name-link:hover {
+  text-decoration-style: solid;
+}
+
 .streak-description-editor {
   width: 100%;
   min-height: 60px;
