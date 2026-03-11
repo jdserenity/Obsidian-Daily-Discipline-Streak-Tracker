@@ -160,6 +160,9 @@ class StreakTrackerPlugin extends Plugin {
       return true;
     } catch (e) {
       console.error("Failed to load streak tracker vault data:", e);
+      // File exists but is temporarily unreadable (e.g. mid-sync from cloud storage).
+      // Still mark as loaded so saves aren't blocked and in-memory data isn't lost.
+      this.vaultDataLoaded = true;
       return false;
     }
   }
