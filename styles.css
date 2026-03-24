@@ -192,6 +192,87 @@
   background: rgb(34, 197, 94);
 }
 
+/* Weekly heatmap (single row, red theme) */
+.streak-weekly-heatmap-container {
+  margin-bottom: 20px;
+}
+
+.streak-weekly-months {
+  margin-left: 0;
+}
+
+.streak-weekly-heatmap-row {
+  display: flex;
+  gap: 2px;
+}
+
+.streak-weekly-cell {
+  flex: 1;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--background-modifier-border);
+  min-width: 0;
+}
+
+.streak-weekly-cell:hover:not(.streak-weekly-level-0) {
+  outline: 1px solid var(--text-muted);
+  outline-offset: 1px;
+}
+
+.streak-weekly-level-0 {
+  background: var(--background-modifier-border);
+}
+
+.streak-weekly-level-1 {
+  background: rgba(239, 68, 68, 0.2);
+}
+
+.streak-weekly-level-2 {
+  background: rgba(239, 68, 68, 0.4);
+}
+
+.streak-weekly-level-3 {
+  background: rgba(239, 68, 68, 0.6);
+}
+
+.streak-weekly-level-4 {
+  background: rgba(239, 68, 68, 0.8);
+}
+
+.streak-weekly-level-5 {
+  background: rgb(239, 68, 68);
+}
+
+.theme-dark .streak-weekly-level-1 {
+  background: rgba(239, 68, 68, 0.15);
+}
+
+.theme-dark .streak-weekly-level-2 {
+  background: rgba(239, 68, 68, 0.3);
+}
+
+.theme-dark .streak-weekly-level-3 {
+  background: rgba(239, 68, 68, 0.5);
+}
+
+.theme-dark .streak-weekly-level-4 {
+  background: rgba(239, 68, 68, 0.7);
+}
+
+.theme-dark .streak-weekly-level-5 {
+  background: rgb(239, 68, 68);
+}
+
+/* Section labels between daily and weekly activities */
+.streak-section-label {
+  font-size: 0.72em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  padding: 4px 2px 2px;
+}
+
 /* Activities */
 .streak-activities {
   display: flex;
@@ -365,6 +446,12 @@
   color: white;
 }
 
+.streak-btn-locked {
+  pointer-events: none;
+  opacity: 0.35;
+  cursor: default;
+}
+
 .streak-btn-fail {
   background: var(--background-modifier-border);
   color: var(--text-muted);
@@ -389,6 +476,58 @@
 /* Weekly buttons: slightly tighter gap so N buttons don't sprawl */
 .streak-buttons-weekly {
   gap: 3px;
+}
+
+/* Day-specific chips for scheduledDays weekly activities */
+.streak-day-chip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 28px;
+  padding: 0 5px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.streak-day-chip-label {
+  font-size: 0.72em;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.streak-day-chip-success {
+  background: rgb(34, 197, 94);
+  color: white;
+}
+
+.streak-day-chip-success:hover {
+  background: rgba(34, 197, 94, 0.75);
+}
+
+.streak-day-chip-failed {
+  background: rgba(239, 68, 68, 0.25);
+  color: rgb(239, 68, 68);
+  pointer-events: none;
+}
+
+.streak-day-chip-today {
+  background: var(--background-modifier-border);
+  color: var(--text-normal);
+}
+
+.streak-day-chip-today:hover {
+  background: rgba(34, 197, 94, 0.15);
+  color: rgb(34, 197, 94);
+}
+
+.streak-day-chip-future {
+  background: var(--background-modifier-border);
+  color: var(--text-muted);
+  pointer-events: none;
+  opacity: 0.35;
 }
 
 /* Responsive adjustments */

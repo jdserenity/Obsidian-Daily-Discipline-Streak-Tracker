@@ -19,7 +19,8 @@ class StreakTrackerPlugin extends Plugin {
   async onload() {
     this.vaultDataLoaded = false;
     this._trackerElements = new Set();
-    this._lastSaveTime = 0;
+    this._lastDataWriteHash = null;
+    this._lastConfigWriteHash = null;
     this._reloadTimeout = null;
     this.activityConfigMap = {}; // id → activity object, populated on config load
 
@@ -46,6 +47,16 @@ class StreakTrackerPlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("modify", (file) => this.onFileModified(file))
     );
+
+    // Retry loading vault data after layout is ready, in case the file wasn't
+    // accessible during onload (e.g. ProtonDrive still syncing at startup)
+    this.app.workspace.onLayoutReady(async () => {
+      if (!this.vaultDataLoaded) {
+        await this.loadVaultData();
+        await this.recalculateAllStats();
+        await this.refreshAllTrackers();
+      }
+    });
   }
 
   async loadPluginData() {
@@ -167,10 +178,57 @@ class StreakTrackerPlugin extends Plugin {
     }
   }
 
+  _hashStr(str) {
+    let h = 0;
+    for (let i = 0; i < str.length; i++) {
+      h = Math.imul(31, h) + str.charCodeAt(i) | 0;
+    }
+    return h;
+  }
+
+  // Called when another device's write is detected. Takes the file as authoritative
+  // for all past days, but merges today's in-memory state on top.
+  async incomingSyncFromFile(content) {
+    try {
+      const vaultData = JSON.parse(content);
+      const today = this.getCurrentDay();
+      const todayMem = this.data.logs[today];
+      const memStartDates = { ...this.data.activityStartDates };
+
+      // Replace all data from the incoming file
+      this.data.logs = vaultData.logs || {};
+      this.data.activityStartDates = vaultData.activityStartDates || {};
+
+      // Restore today's in-memory log on top (in-memory wins for today,
+      // since the user may have just logged something on this device)
+      if (todayMem) {
+        if (!this.data.logs[today]) {
+          this.data.logs[today] = todayMem;
+        } else {
+          for (const [act, val] of Object.entries(todayMem)) {
+            this.data.logs[today][act] = val;
+          }
+        }
+      }
+
+      // activityStartDates: keep the earliest from either source
+      for (const [act, date] of Object.entries(memStartDates)) {
+        if (!this.data.activityStartDates[act] || date < this.data.activityStartDates[act]) {
+          this.data.activityStartDates[act] = date;
+        }
+      }
+
+      this.vaultDataLoaded = true;
+      await this.recalculateAllStats();
+      await this.refreshAllTrackers();
+    } catch (e) {
+      console.error("streak-tracker: incomingSyncFromFile failed:", e);
+    }
+  }
+
   async saveVaultData() {
     if (!this.vaultDataLoaded) return;
     const dataPath = this.data.settings.dataFilePath || "Archive/streak-tracker-data.md";
-
     // Merge with existing file data to prevent cross-device overwrites.
     // In-memory wins for conflicts (it has the most recent user action),
     // but data that only exists on disk is preserved.
@@ -235,8 +293,9 @@ class StreakTrackerPlugin extends Plugin {
       stats: this.data.stats,
       activityStartDates: this.data.activityStartDates
     };
-    this._lastSaveTime = Date.now();
-    await this.app.vault.adapter.write(dataPath, JSON.stringify(vaultData, null, 2));
+    const jsonStr = JSON.stringify(vaultData, null, 2);
+    this._lastDataWriteHash = this._hashStr(jsonStr);
+    await this.app.vault.adapter.write(dataPath, jsonStr);
   }
 
   async loadActivityConfig() {
@@ -259,7 +318,7 @@ class StreakTrackerPlugin extends Plugin {
   async saveActivityConfig(config) {
     const configPath = this.data.settings.configFilePath || "Archive/streak-tracker-config.md";
     const content = JSON.stringify(config, null, 2);
-    this._lastSaveTime = Date.now(); // Suppress self-triggered file watcher reload
+    this._lastConfigWriteHash = this._hashStr(content);
     const file = this.app.vault.getAbstractFileByPath(configPath);
     if (file) {
       await this.app.vault.modify(file, content);
@@ -432,9 +491,16 @@ class StreakTrackerPlugin extends Plugin {
       }
     }
 
-    // Calculate current streak (consecutive successes from today going backwards)
+    // Calculate current streak (consecutive successes going backwards)
+    // If today hasn't been achieved yet, start from yesterday — today is still open
+    // and should not break the streak until the day actually ends.
     let checkDate = this.parseDate(today);
     const startDateObj = this.parseDate(startDate);
+
+    const todayLog = logs[today];
+    if (!todayLog || todayLog[activityId] !== "success") {
+      checkDate.setDate(checkDate.getDate() - 1);
+    }
 
     while (checkDate >= startDateObj) {
       const dateStr = this.formatDate(checkDate);
@@ -593,16 +659,27 @@ class StreakTrackerPlugin extends Plugin {
 
     if (file.path !== configPath && file.path !== dataPath) return;
 
-    // Ignore self-triggered modifications
-    if (Date.now() - this._lastSaveTime < 2000) return;
-
     // Debounce rapid sync writes
     if (this._reloadTimeout) clearTimeout(this._reloadTimeout);
     this._reloadTimeout = setTimeout(async () => {
-      if (file.path === dataPath) {
-        await this.loadVaultData();
+      try {
+        if (file.path === dataPath) {
+          const content = await this.app.vault.adapter.read(dataPath);
+          const readHash = this._hashStr(content);
+          // If the hash matches what we last wrote, this is our own write
+          // bouncing back from cloud sync — nothing to do.
+          if (readHash === this._lastDataWriteHash) return;
+          // Different content means another device wrote this — treat the
+          // file as authoritative for past days.
+          await this.incomingSyncFromFile(content);
+        } else {
+          const content = await this.app.vault.adapter.read(configPath);
+          if (this._hashStr(content) === this._lastConfigWriteHash) return;
+          await this.refreshAllTrackers();
+        }
+      } catch (e) {
+        console.error("streak-tracker: onFileModified handler failed:", e);
       }
-      await this.refreshAllTrackers();
     }, 500);
   }
 
@@ -621,6 +698,17 @@ class StreakTrackerPlugin extends Plugin {
 
   async renderTracker(el) {
     this._trackerElements.add(el);
+
+    // Prevent concurrent renders for the same element. If a render is already
+    // in progress, mark a pending re-render and return — the in-progress render
+    // will do one final pass once it finishes, using the latest data.
+    if (!this._renderingEls) this._renderingEls = new WeakSet();
+    if (!this._pendingRerender) this._pendingRerender = new WeakSet();
+    if (this._renderingEls.has(el)) {
+      this._pendingRerender.add(el);
+      return;
+    }
+    this._renderingEls.add(el);
 
     const config = await this.loadActivityConfig();
 
@@ -646,19 +734,48 @@ class StreakTrackerPlugin extends Plugin {
       // Get current year for heatmap
       const currentYear = new Date().getFullYear();
 
-      // Render heatmap first (above activities)
-      this.renderHeatmap(container, config.activities, currentYear);
+      const dailyActivities = config.activities.filter(a => a.frequency !== "weekly");
+      const weeklyActivities = config.activities.filter(a => a.frequency === "weekly");
+
+      // Recalculate weekly stats now that activityConfigMap is populated
+      for (const activity of weeklyActivities) {
+        this.calculateWeeklyStats(activity.id, activity.weeklyTarget || 1);
+      }
+
+      // Daily heatmap
+      this.renderHeatmap(container, dailyActivities, currentYear);
+
+      // Weekly heatmap (red, single row) only if there are weekly activities
+      if (weeklyActivities.length > 0) {
+        this.renderWeeklyHeatmap(container, weeklyActivities, currentYear);
+      }
 
       // Render activities
       const activitiesContainer = container.createDiv({ cls: "streak-activities" });
 
-      for (const activity of config.activities) {
+      if (dailyActivities.length > 0 && weeklyActivities.length > 0) {
+        activitiesContainer.createEl("div", { text: "Daily", cls: "streak-section-label" });
+      }
+      for (const activity of dailyActivities) {
         this.renderActivity(activitiesContainer, activity, currentLog[activity.id]);
+      }
+      if (weeklyActivities.length > 0) {
+        activitiesContainer.createEl("div", { text: "Weekly", cls: "streak-section-label" });
+        for (const activity of weeklyActivities) {
+          this.renderActivity(activitiesContainer, activity, currentLog[activity.id]);
+        }
       }
     }
 
     // Atomic update
     el.replaceChildren(container);
+
+    // Release lock; if a render was requested while we were in progress, do it now.
+    this._renderingEls.delete(el);
+    if (this._pendingRerender.has(el)) {
+      this._pendingRerender.delete(el);
+      await this.renderTracker(el);
+    }
   }
 
   renderActivity(container, activity, currentState) {
@@ -711,47 +828,106 @@ class StreakTrackerPlugin extends Plugin {
     this.renderActivityNameAndStats(activityEl, headerRow, activity, "daily");
   }
 
+  parseScheduledDays(scheduledDays) {
+    const map = {
+      sun: 0, sunday: 0, mon: 1, monday: 1, tue: 2, tuesday: 2,
+      wed: 3, wednesday: 3, thu: 4, thursday: 4, fri: 5, friday: 5,
+      sat: 6, saturday: 6
+    };
+    return scheduledDays.map(d => map[d.toLowerCase()]).filter(d => d !== undefined);
+  }
+
   renderWeeklyActivity(container, activity) {
     const weeklyTarget = activity.weeklyTarget || 1;
     const today = this.getCurrentDay();
     const weekStart = this.getISOWeekStart(today);
     const weekDays = this.getWeekDays(weekStart);
 
-    // Sessions logged this week, in chronological order
-    const sessionsThisWeek = weekDays.filter(
-      day => this.data.logs[day] && this.data.logs[day][activity.id] === "success"
-    );
-    const sessionCount = sessionsThisWeek.length;
-    const todayLogged = sessionsThisWeek.includes(today);
-
     const activityEl = container.createDiv({ cls: "streak-activity" });
     const headerRow = activityEl.createDiv({ cls: "streak-activity-header" });
     const buttonsEl = headerRow.createDiv({ cls: "streak-buttons streak-buttons-weekly" });
 
-    for (let i = 0; i < weeklyTarget; i++) {
-      const isActive = i < sessionCount;
-      const btn = buttonsEl.createEl("button", {
-        text: "✓",
-        cls: `streak-btn streak-btn-success ${isActive ? "streak-btn-active" : ""}`,
-        attr: { title: isActive ? "Deselect this session" : "Log a session" }
-      });
+    if (activity.scheduledDays && activity.scheduledDays.length > 0) {
+      const scheduledIndices = this.parseScheduledDays(activity.scheduledDays);
+      const DAY_ABBR = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
-      const idx = i; // capture for closure
-      btn.addEventListener("click", async () => {
-        if (idx < sessionsThisWeek.length) {
-          // Deselect: remove the session at this position
-          await this.saveLog(activity.id, "none", sessionsThisWeek[idx]);
+      for (const dayDate of weekDays) {
+        const d = this.parseDate(dayDate);
+        const dayIndex = d.getDay();
+        if (!scheduledIndices.includes(dayIndex)) continue;
+
+        const dayLog = this.data.logs[dayDate]?.[activity.id];
+        const isFuture = dayDate > today;
+        const isPast = dayDate < today;
+
+        const chip = buttonsEl.createEl("button", { cls: "streak-day-chip" });
+        chip.createEl("span", { text: DAY_ABBR[dayIndex], cls: "streak-day-chip-label" });
+
+        if (dayLog === "success") {
+          chip.classList.add("streak-day-chip-success");
+          chip.setAttribute("title", "Click to undo");
+          chip.addEventListener("click", async () => {
+            await this.saveLog(activity.id, "none", dayDate);
+            await this.refreshAllTrackers();
+          });
+        } else if (isPast) {
+          chip.classList.add("streak-day-chip-failed");
+        } else if (isFuture) {
+          chip.classList.add("streak-day-chip-future");
         } else {
-          // Select: add today's session (one session per day max)
-          if (todayLogged) return;
-          await this.saveLog(activity.id, "success", today);
+          // Today, not yet logged
+          chip.classList.add("streak-day-chip-today");
+          chip.setAttribute("title", "Log today");
+          chip.addEventListener("click", async () => {
+            await this.saveLog(activity.id, "success", today);
+            await this.refreshAllTrackers();
+          });
         }
-        const trackerEl = container.closest(".streak-tracker-container");
-        if (trackerEl) await this.renderTracker(trackerEl.parentElement);
-      });
-    }
+      }
 
-    this.renderActivityNameAndStats(activityEl, headerRow, activity, "weekly", sessionCount, weeklyTarget);
+      const sessionCount = weekDays.filter(d => {
+        const idx = this.parseDate(d).getDay();
+        return scheduledIndices.includes(idx) && this.data.logs[d]?.[activity.id] === "success";
+      }).length;
+
+      this.renderActivityNameAndStats(activityEl, headerRow, activity, "weekly", sessionCount, weeklyTarget);
+    } else {
+      // Generic: N checkmark buttons
+      const sessionsThisWeek = weekDays.filter(
+        day => this.data.logs[day] && this.data.logs[day][activity.id] === "success"
+      );
+      const sessionCount = sessionsThisWeek.length;
+      const todayLogged = sessionsThisWeek.includes(today);
+
+      for (let i = 0; i < weeklyTarget; i++) {
+        const isActive = i < sessionCount;
+        const isNext = i === sessionCount && !todayLogged;
+        const cls = `streak-btn streak-btn-success${isActive ? " streak-btn-active" : ""}${!isActive && !isNext ? " streak-btn-locked" : ""}`;
+        const btn = buttonsEl.createEl("button", {
+          text: "✓",
+          cls,
+          attr: { title: isActive ? "Deselect this session" : isNext ? "Log a session" : "" }
+        });
+
+        if (isActive) {
+          const idx = i;
+          btn.addEventListener("click", async () => {
+            await this.saveLog(activity.id, "none", sessionsThisWeek[idx]);
+            const trackerEl = container.closest(".streak-tracker-container");
+            if (trackerEl) await this.renderTracker(trackerEl.parentElement);
+          });
+        } else if (isNext) {
+          btn.addEventListener("click", async () => {
+            await this.saveLog(activity.id, "success", today);
+            const trackerEl = container.closest(".streak-tracker-container");
+            if (trackerEl) await this.renderTracker(trackerEl.parentElement);
+          });
+        }
+        // locked buttons get no click handler
+      }
+
+      this.renderActivityNameAndStats(activityEl, headerRow, activity, "weekly", sessionCount, weeklyTarget);
+    }
   }
 
   // Shared helper: renders the activity name (with links/description) and stats area.
@@ -829,7 +1005,7 @@ class StreakTrackerPlugin extends Plugin {
       // Weekly stats: streaks are in weeks, rate is successful-weeks/total-weeks
       const weeklySuccesses = stats.weeklySuccesses ?? 0;
       const totalWeeks = stats.totalDays ?? 0;
-      const weekRate = totalWeeks > 0 ? (weeklySuccesses / totalWeeks).toFixed(2) : "0.00";
+      const weekRate = totalWeeks > 0 ? ((weeklySuccesses / totalWeeks) * 100).toFixed(0) : "0";
 
       statsEl.createEl("span", {
         text: `🔥 ${stats.currentStreak}`,
@@ -1023,7 +1199,7 @@ class StreakTrackerPlugin extends Plugin {
     const totalDays = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
     const totalWeeks = Math.ceil((totalDays + startDay) / 7);
 
-    const activityCount = activities.length;
+    const dailyActivities = activities.filter(a => a.frequency !== "weekly");
     let currentDate = new Date(startDate);
 
     for (let week = 0; week < totalWeeks; week++) {
@@ -1047,23 +1223,23 @@ class StreakTrackerPlugin extends Plugin {
         const dateStr = this.formatDate(currentDate);
         const log = this.data.logs[dateStr] || {};
 
-        // Calculate completion percentage
+        // Calculate completion percentage using only activities that existed on this date
         let successCount = 0;
-        let trackedCount = 0;
+        let historicalCount = 0;
 
-        for (const activity of activities) {
-          if (log[activity.id] !== undefined) {
-            trackedCount++;
-            if (log[activity.id] === "success") {
-              successCount++;
-            }
+        for (const activity of dailyActivities) {
+          const startedOn = this.data.activityStartDates[activity.id];
+          if (startedOn && startedOn > dateStr) continue; // activity didn't exist yet
+          historicalCount++;
+          if (log[activity.id] === "success") {
+            successCount++;
           }
         }
 
         // Set intensity level
         let level = 0;
-        if (trackedCount > 0) {
-          const percentage = (successCount / activityCount) * 100;
+        if (historicalCount > 0) {
+          const percentage = (successCount / historicalCount) * 100;
           if (percentage === 100) {
             level = 5;
           } else if (percentage >= 76) {
@@ -1079,7 +1255,7 @@ class StreakTrackerPlugin extends Plugin {
 
         cell.classList.add(`streak-heatmap-level-${level}`);
         cell.setAttribute("data-date", dateStr);
-        cell.setAttribute("title", `${dateStr}: ${successCount}/${activityCount} activities`);
+        cell.setAttribute("title", `${dateStr}: ${successCount}/${historicalCount} activities`);
 
         // Apply custom color if set
         if (this.data.settings.heatmapColor && level > 0) {
@@ -1089,6 +1265,109 @@ class StreakTrackerPlugin extends Plugin {
 
         currentDate.setDate(currentDate.getDate() + 1);
       }
+    }
+
+    if (replaceEl) {
+      replaceEl.replaceWith(heatmapContainer);
+    } else {
+      container.appendChild(heatmapContainer);
+    }
+  }
+
+  getWeeklyYearsWithData(weeklyActivities) {
+    const years = new Set();
+    const currentYear = new Date().getFullYear();
+    years.add(currentYear);
+    for (const activity of weeklyActivities) {
+      const startDate = this.data.activityStartDates[activity.id];
+      if (startDate) years.add(parseInt(startDate.split("-")[0]));
+    }
+    for (const dateStr of Object.keys(this.data.logs)) {
+      const log = this.data.logs[dateStr];
+      const y = parseInt(dateStr.split("-")[0]);
+      for (const activity of weeklyActivities) {
+        if (log[activity.id] !== undefined) { years.add(y); break; }
+      }
+    }
+    return Array.from(years).sort((a, b) => b - a);
+  }
+
+  renderWeeklyHeatmap(container, weeklyActivities, year, replaceEl = null) {
+    const heatmapContainer = document.createElement("div");
+    heatmapContainer.className = "streak-weekly-heatmap-container";
+
+    const currentYear = new Date().getFullYear();
+    const weeklyYears = this.getWeeklyYearsWithData(weeklyActivities);
+    const showNav = weeklyYears.length > 1;
+
+    if (showNav) {
+      const navEl = heatmapContainer.createDiv({ cls: "streak-heatmap-nav" });
+      const prevBtn = navEl.createEl("button", { text: "‹", cls: "streak-nav-btn", attr: { title: "Previous year" } });
+      navEl.createEl("span", { text: `${year} weekly`, cls: "streak-year-label" });
+      const nextBtn = navEl.createEl("button", { text: "›", cls: "streak-nav-btn", attr: { title: "Next year" } });
+
+      if (year >= currentYear) nextBtn.classList.add("streak-nav-btn-disabled");
+      else nextBtn.addEventListener("click", () => {
+        this.renderWeeklyHeatmap(container, weeklyActivities, year + 1, heatmapContainer);
+      });
+
+      const earliestYear = Math.min(...weeklyYears);
+      if (year <= earliestYear) prevBtn.classList.add("streak-nav-btn-disabled");
+      else prevBtn.addEventListener("click", () => {
+        this.renderWeeklyHeatmap(container, weeklyActivities, year - 1, heatmapContainer);
+      });
+    }
+
+    // Month labels
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const monthLabels = heatmapContainer.createDiv({ cls: "streak-heatmap-months streak-weekly-months" });
+    for (const month of months) {
+      monthLabels.createEl("span", { text: month, cls: "streak-heatmap-month" });
+    }
+
+    // Single row of week cells
+    const row = heatmapContainer.createDiv({ cls: "streak-weekly-heatmap-row" });
+
+    const jan1 = this.formatDate(new Date(year, 0, 1));
+    const dec31 = this.formatDate(new Date(year, 11, 31));
+    let wStart = this.getISOWeekStart(jan1);
+
+    while (wStart <= dec31) {
+      const weekDays = this.getWeekDays(wStart);
+      const wEnd = weekDays[6];
+      const cell = row.createDiv({ cls: "streak-weekly-cell" });
+
+      let completedCount = 0;
+      let historicalCount = 0;
+
+      for (const activity of weeklyActivities) {
+        const startedOn = this.data.activityStartDates[activity.id];
+        if (startedOn && startedOn > wEnd) continue; // activity didn't exist yet
+        historicalCount++;
+        const weeklyTarget = activity.weeklyTarget || 1;
+        let sessions = 0;
+        for (const day of weekDays) {
+          if (this.data.logs[day] && this.data.logs[day][activity.id] === "success") sessions++;
+        }
+        if (sessions >= weeklyTarget) completedCount++;
+      }
+
+      let level = 0;
+      if (historicalCount > 0) {
+        const pct = (completedCount / historicalCount) * 100;
+        if (pct === 100) level = 5;
+        else if (pct >= 76) level = 4;
+        else if (pct >= 51) level = 3;
+        else if (pct >= 26) level = 2;
+        else if (pct >= 1) level = 1;
+      }
+
+      cell.classList.add(`streak-weekly-level-${level}`);
+      cell.setAttribute("title", `Week of ${wStart}: ${completedCount}/${historicalCount} activities met target`);
+
+      const next = this.parseDate(wStart);
+      next.setDate(next.getDate() + 7);
+      wStart = this.formatDate(next);
     }
 
     if (replaceEl) {
@@ -1236,6 +1515,34 @@ class StreakTrackerSettingTab extends PluginSettingTab {
           await this.plugin.recalculateAllStats();
           await this.plugin.refreshAllTrackers();
           new Notice("Streak tracker UI refreshed from vault data.");
+        }));
+
+    new Setting(containerEl)
+      .setName("Force Load from File")
+      .setDesc("Discard all in-memory data and reload exactly what's in the data file. Use this if the plugin isn't picking up an existing data file.")
+      .addButton(button => button
+        .setButtonText("Force Load")
+        .setWarning()
+        .onClick(async () => {
+          const dataPath = this.plugin.data.settings.dataFilePath || "Archive/streak-tracker-data.md";
+          const exists = await this.plugin.app.vault.adapter.exists(dataPath);
+          if (!exists) {
+            new Notice(`Data file not found at: ${dataPath}`);
+            return;
+          }
+          try {
+            const content = await this.plugin.app.vault.adapter.read(dataPath);
+            const vaultData = JSON.parse(content);
+            this.plugin.data.logs = vaultData.logs || {};
+            this.plugin.data.stats = vaultData.stats || {};
+            this.plugin.data.activityStartDates = vaultData.activityStartDates || {};
+            this.plugin.vaultDataLoaded = true;
+            await this.plugin.recalculateAllStats();
+            await this.plugin.refreshAllTrackers();
+            new Notice("Streak data force-loaded from file.");
+          } catch (e) {
+            new Notice(`Failed to load data file: ${e.message}`);
+          }
         }));
 
     new Setting(containerEl)
