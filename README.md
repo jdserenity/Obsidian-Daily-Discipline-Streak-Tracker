@@ -105,7 +105,7 @@ Access via **Settings → Streak Tracker**:
 | Day End Time | 06:59 | When the "day" ends (24-hour format) |
 | Heatmap Color | green | Custom color (hex format, e.g., `#22c55e`) |
 | Config File Path | streak-tracker-config.md | Path to activity config |
-| Data File Path | streak-tracker-data.md | Path to streak data file (logs, stats). Syncs across devices. |
+| Data File Path | streak-tracker-data.md | Base path for the vault data store. The plugin writes sharded `.md` files here so the data can sync without relying on `.obsidian`. |
 | Link Color | #8ECCDF | Color for wiki-links in activity names |
 | Refresh UI | — | Manually reload data from the vault file and refresh all tracker views |
 
@@ -138,11 +138,21 @@ Access via **Settings → Streak Tracker**:
 Your data is stored in two places:
 
 - **Activity definitions**: `streak-tracker-config.md` in your vault (editable)
-- **Logs, stats, and start dates**: `streak-tracker-data.md` in your vault (syncs across devices)
+- **Logs and start dates**: a sharded Markdown data store rooted at `streak-tracker-data.md` in your vault (syncs across devices)
 
 Plugin settings (day end time, colors, file paths) are managed internally by Obsidian.
 
-Both vault files are regular `.md` files so they appear in Obsidian's file browser and sync via any sync service (Obsidian Sync, iCloud, Proton Drive, etc.).
+Important: Obsidian plugin storage such as `.obsidian/plugins/streak-tracker/data.json` is only cross-device if your sync setup includes `.obsidian`. If you do not sync plugin data across devices, keep using the vault Markdown data store for shared streak data.
+
+JSON files are not recommended for this plugin's vault data in Obsidian. The plugin stores machine data in `.md` files so the files remain visible and sync cleanly in the vault.
+
+The data store is sharded to reduce corruption risk:
+
+- `streak-tracker-data/manifest.md` stores the active month list and activity start dates
+- `streak-tracker-data/logs/YYYY-MM.md` stores daily logs for one month per file
+- `streak-tracker-data/snapshots/*.md` stores backup snapshots created during migration or recovery
+
+All vault data files are regular `.md` files so they appear in Obsidian's file browser and sync via any sync service (Obsidian Sync, iCloud, Proton Drive, etc.).
 
 **Important**: The `streak-tracker` code block is just a UI element. You can add or remove it from any note without losing data. Multiple code blocks in different notes all share the same data.
 
@@ -150,7 +160,7 @@ Both vault files are regular `.md` files so they appear in Obsidian's file brows
 
 The plugin watches for changes to the config and data files. If you edit the config file or data arrives via sync, the tracker UI updates automatically — no need to reopen the note.
 
-If the UI ever gets out of sync (e.g., after a sync conflict or delay), use the **Refresh UI** button in Settings to manually reload data from the vault file without writing anything back. This is a safe, read-only operation.
+If the UI ever gets out of sync (e.g., after a sync conflict or delay), use the **Refresh UI** button in Settings to manually reload data from the vault store without writing anything back. This is a safe, read-only operation.
 
 ## Day Boundary
 

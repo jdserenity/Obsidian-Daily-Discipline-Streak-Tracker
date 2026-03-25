@@ -19,7 +19,7 @@ class StreakTrackerPlugin extends Plugin {
   async onload() {
     this.vaultDataLoaded = false;
     this._trackerElements = new Set();
-    this._lastDataWriteHash = null;
+    this._lastDataWriteHashes = new Map();
     this._lastConfigWriteHash = null;
     this._reloadTimeout = null;
     this.activityConfigMap = {}; // id → activity object, populated on config load
@@ -125,47 +125,14 @@ class StreakTrackerPlugin extends Plugin {
   }
 
   async loadVaultData() {
-    const dataPath = this.data.settings.dataFilePath || "Archive/streak-tracker-data.md";
-
-    // Use adapter.exists + adapter.read instead of getAbstractFileByPath,
-    // because the file index may not be ready yet on mobile
-    const exists = await this.app.vault.adapter.exists(dataPath);
-    if (!exists) {
-      return false;
-    }
-
     try {
-      const content = await this.app.vault.adapter.read(dataPath);
-      const vaultData = JSON.parse(content);
-      const incoming = {
-        logs: vaultData.logs || {},
-        activityStartDates: vaultData.activityStartDates || {}
-      };
-
-      // Merge logs: for each date+activity, prefer in-memory value (recent user
-      // action) over incoming, but never drop data that only exists in one side
-      for (const date of Object.keys(incoming.logs)) {
-        if (!this.data.logs[date]) {
-          this.data.logs[date] = incoming.logs[date];
-        } else {
-          for (const act of Object.keys(incoming.logs[date])) {
-            if (!this.data.logs[date][act]) {
-              this.data.logs[date][act] = incoming.logs[date][act];
-            }
-            // If both have a value, keep the in-memory one (more recent action)
-          }
-        }
+      const vaultData = await this.readVaultDataStore();
+      if (!vaultData) {
+        return false;
       }
 
-      // Merge activityStartDates: keep the earliest
-      for (const act of Object.keys(incoming.activityStartDates)) {
-        if (!this.data.activityStartDates[act] ||
-            incoming.activityStartDates[act] < this.data.activityStartDates[act]) {
-          this.data.activityStartDates[act] = incoming.activityStartDates[act];
-        }
-      }
-
-      // Stats will be recalculated from merged logs
+      this.data.logs = vaultData.logs || {};
+      this.data.activityStartDates = vaultData.activityStartDates || {};
       this.data.stats = vaultData.stats || {};
       this.vaultDataLoaded = true;
       return true;
@@ -186,11 +153,255 @@ class StreakTrackerPlugin extends Plugin {
     return h;
   }
 
+  getDataFilePath() {
+    return this.data.settings.dataFilePath || "Archive/streak-tracker-data.md";
+  }
+
+  getDataStoreRoot() {
+    const dataPath = this.getDataFilePath();
+    return dataPath.endsWith(".md") ? dataPath.slice(0, -3) : `${dataPath}-store`;
+  }
+
+  joinVaultPath(...parts) {
+    return parts.filter(Boolean).join("/").replace(/\/+/g, "/");
+  }
+
+  getManifestPath() {
+    return this.joinVaultPath(this.getDataStoreRoot(), "manifest.md");
+  }
+
+  getLogsDirPath() {
+    return this.joinVaultPath(this.getDataStoreRoot(), "logs");
+  }
+
+  getLogShardPath(monthKey) {
+    return this.joinVaultPath(this.getLogsDirPath(), `${monthKey}.md`);
+  }
+
+  getSnapshotsDirPath() {
+    return this.joinVaultPath(this.getDataStoreRoot(), "snapshots");
+  }
+
+  getSnapshotPath(label = "snapshot") {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    return this.joinVaultPath(this.getSnapshotsDirPath(), `${label}-${stamp}.md`);
+  }
+
+  getParentPath(path) {
+    const slash = path.lastIndexOf("/");
+    return slash === -1 ? "" : path.slice(0, slash);
+  }
+
+  getMonthKey(dateStr) {
+    return dateStr.slice(0, 7);
+  }
+
+  isValidDateKey(dateStr) {
+    return /^\d{4}-\d{2}-\d{2}$/.test(dateStr);
+  }
+
+  isValidMonthKey(monthKey) {
+    return /^\d{4}-\d{2}$/.test(monthKey);
+  }
+
+  normalizeVaultData(vaultData) {
+    return {
+      logs: vaultData.logs || {},
+      stats: vaultData.stats || {},
+      activityStartDates: vaultData.activityStartDates || {}
+    };
+  }
+
+  validateVaultDataShape(vaultData) {
+    if (!vaultData || typeof vaultData !== "object" || Array.isArray(vaultData)) {
+      throw new Error("Vault data must be an object.");
+    }
+
+    const logs = vaultData.logs || {};
+    const activityStartDates = vaultData.activityStartDates || {};
+
+    if (typeof logs !== "object" || Array.isArray(logs)) {
+      throw new Error("Vault logs must be an object.");
+    }
+    if (typeof activityStartDates !== "object" || Array.isArray(activityStartDates)) {
+      throw new Error("Vault activityStartDates must be an object.");
+    }
+
+    for (const [dateStr, dayLog] of Object.entries(logs)) {
+      if (!this.isValidDateKey(dateStr)) {
+        throw new Error(`Invalid log date key: ${dateStr}`);
+      }
+      if (!dayLog || typeof dayLog !== "object" || Array.isArray(dayLog)) {
+        throw new Error(`Invalid day log for ${dateStr}`);
+      }
+    }
+
+    for (const [activityId, startDate] of Object.entries(activityStartDates)) {
+      if (typeof activityId !== "string" || !this.isValidDateKey(startDate)) {
+        throw new Error(`Invalid start date for activity ${activityId}`);
+      }
+    }
+  }
+
+  async ensureFolder(path) {
+    if (!path) return;
+    const adapter = this.app.vault.adapter;
+    if (await adapter.exists(path)) return;
+    const parent = this.getParentPath(path);
+    if (parent && !(await adapter.exists(parent))) {
+      await this.ensureFolder(parent);
+    }
+    await adapter.mkdir(path);
+  }
+
+  async safeReadJsonMd(path) {
+    const content = await this.app.vault.adapter.read(path);
+    const parsed = JSON.parse(content);
+    return { content, parsed };
+  }
+
+  async writeJsonMd(path, dataObj) {
+    const parent = this.getParentPath(path);
+    await this.ensureFolder(parent);
+
+    const content = JSON.stringify(dataObj, null, 2);
+    JSON.parse(content);
+
+    const adapter = this.app.vault.adapter;
+    const tmpPath = `${path}.tmp`;
+    const bakPath = `${path}.bak`;
+
+    await adapter.write(tmpPath, content);
+    const staged = await adapter.read(tmpPath);
+    JSON.parse(staged);
+
+    if (await adapter.exists(path)) {
+      try {
+        const previous = await adapter.read(path);
+        await adapter.write(bakPath, previous);
+      } catch (e) {
+        console.warn("streak-tracker: failed to update backup file:", path, e);
+      }
+    }
+
+    await adapter.write(path, staged);
+    this._lastDataWriteHashes.set(path, this._hashStr(staged));
+    this._lastDataWriteHashes.set(tmpPath, this._hashStr(staged));
+  }
+
+  async snapshotLegacyDataFile(content, label = "legacy") {
+    try {
+      const snapshotPath = this.getSnapshotPath(label);
+      await this.writeJsonMd(snapshotPath, JSON.parse(content));
+    } catch (e) {
+      console.warn("streak-tracker: failed to create data snapshot:", e);
+    }
+  }
+
+  buildMonthShards(logs) {
+    const shards = {};
+    for (const [dateStr, dayLog] of Object.entries(logs || {})) {
+      const monthKey = this.getMonthKey(dateStr);
+      if (!shards[monthKey]) {
+        shards[monthKey] = {};
+      }
+      shards[monthKey][dateStr] = dayLog;
+    }
+    return shards;
+  }
+
+  async readShardedVaultData() {
+    const manifestPath = this.getManifestPath();
+    const adapter = this.app.vault.adapter;
+    if (!(await adapter.exists(manifestPath))) {
+      return null;
+    }
+
+    const { parsed: manifest } = await this.safeReadJsonMd(manifestPath);
+    if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+      throw new Error("Invalid sharded data manifest.");
+    }
+
+    const months = Array.isArray(manifest.months) ? manifest.months : [];
+    const activityStartDates = manifest.activityStartDates || {};
+    const logs = {};
+
+    for (const monthKey of months) {
+      if (!this.isValidMonthKey(monthKey)) {
+        throw new Error(`Invalid month key in manifest: ${monthKey}`);
+      }
+      const shardPath = this.getLogShardPath(monthKey);
+      if (!(await adapter.exists(shardPath))) {
+        continue;
+      }
+      const { parsed: shard } = await this.safeReadJsonMd(shardPath);
+      if (!shard || typeof shard !== "object" || Array.isArray(shard)) {
+        throw new Error(`Invalid shard file: ${shardPath}`);
+      }
+      for (const [dateStr, dayLog] of Object.entries(shard)) {
+        logs[dateStr] = dayLog;
+      }
+    }
+
+    const vaultData = this.normalizeVaultData({ logs, activityStartDates, stats: {} });
+    this.validateVaultDataShape(vaultData);
+    return vaultData;
+  }
+
+  async readLegacyVaultData() {
+    const dataPath = this.getDataFilePath();
+    const adapter = this.app.vault.adapter;
+    if (!(await adapter.exists(dataPath))) {
+      return null;
+    }
+
+    const { content, parsed } = await this.safeReadJsonMd(dataPath);
+    const vaultData = this.normalizeVaultData(parsed);
+    this.validateVaultDataShape(vaultData);
+    return { content, vaultData };
+  }
+
+  async readVaultDataStore() {
+    const sharded = await this.readShardedVaultData();
+    if (sharded) {
+      return sharded;
+    }
+
+    const legacy = await this.readLegacyVaultData();
+    if (!legacy) {
+      return null;
+    }
+
+    await this.snapshotLegacyDataFile(legacy.content, "legacy-import");
+    await this.writeVaultDataStore(legacy.vaultData);
+    return legacy.vaultData;
+  }
+
+  async writeVaultDataStore(vaultData) {
+    const normalized = this.normalizeVaultData(vaultData);
+    this.validateVaultDataShape(normalized);
+
+    const shards = this.buildMonthShards(normalized.logs);
+    const months = Object.keys(shards).sort();
+
+    await this.ensureFolder(this.getLogsDirPath());
+    await this.ensureFolder(this.getSnapshotsDirPath());
+
+    await this.writeJsonMd(this.getManifestPath(), {
+      version: 2,
+      months,
+      activityStartDates: normalized.activityStartDates
+    });
+
+    for (const monthKey of months) {
+      await this.writeJsonMd(this.getLogShardPath(monthKey), shards[monthKey]);
+    }
+  }
+
   // Called when another device's write is detected. Takes the file as authoritative
   // for all past days, but merges today's in-memory state on top.
-  async incomingSyncFromFile(content) {
+  async incomingSyncFromData(vaultData) {
     try {
-      const vaultData = JSON.parse(content);
       const today = this.getCurrentDay();
       const todayMem = this.data.logs[today];
       const memStartDates = { ...this.data.activityStartDates };
@@ -222,13 +433,32 @@ class StreakTrackerPlugin extends Plugin {
       await this.recalculateAllStats();
       await this.refreshAllTrackers();
     } catch (e) {
-      console.error("streak-tracker: incomingSyncFromFile failed:", e);
+      console.error("streak-tracker: incomingSyncFromData failed:", e);
     }
   }
 
   async saveVaultData() {
     if (!this.vaultDataLoaded) return;
-    const dataPath = this.data.settings.dataFilePath || "Archive/streak-tracker-data.md";
+
+    const nextActivityIds = new Set();
+    for (const date of Object.keys(this.data.logs)) {
+      for (const act of Object.keys(this.data.logs[date])) {
+        nextActivityIds.add(act);
+      }
+    }
+    for (const act of Object.keys(this.data.activityStartDates)) {
+      nextActivityIds.add(act);
+    }
+    for (const act of nextActivityIds) {
+      this.calculateStats(act);
+    }
+
+    await this.writeVaultDataStore({
+      logs: this.data.logs,
+      stats: this.data.stats,
+      activityStartDates: this.data.activityStartDates
+    });
+    return;
     // Merge with existing file data to prevent cross-device overwrites.
     // In-memory wins for conflicts (it has the most recent user action),
     // but data that only exists on disk is preserved.
@@ -293,9 +523,7 @@ class StreakTrackerPlugin extends Plugin {
       stats: this.data.stats,
       activityStartDates: this.data.activityStartDates
     };
-    const jsonStr = JSON.stringify(vaultData, null, 2);
-    this._lastDataWriteHash = this._hashStr(jsonStr);
-    await this.app.vault.adapter.write(dataPath, jsonStr);
+    await this.writeVaultDataStore(vaultData);
   }
 
   async loadActivityConfig() {
@@ -655,23 +883,27 @@ class StreakTrackerPlugin extends Plugin {
 
   onFileModified(file) {
     const configPath = this.data.settings.configFilePath || "Archive/streak-tracker-config.md";
-    const dataPath = this.data.settings.dataFilePath || "Archive/streak-tracker-data.md";
+    const dataPath = this.getDataFilePath();
+    const dataStoreRoot = this.getDataStoreRoot();
+    const isDataFile = file.path === dataPath || file.path.startsWith(`${dataStoreRoot}/`);
 
-    if (file.path !== configPath && file.path !== dataPath) return;
+    if (file.path !== configPath && !isDataFile) return;
 
     // Debounce rapid sync writes
     if (this._reloadTimeout) clearTimeout(this._reloadTimeout);
     this._reloadTimeout = setTimeout(async () => {
       try {
-        if (file.path === dataPath) {
-          const content = await this.app.vault.adapter.read(dataPath);
+        if (isDataFile) {
+          const content = await this.app.vault.adapter.read(file.path);
           const readHash = this._hashStr(content);
           // If the hash matches what we last wrote, this is our own write
           // bouncing back from cloud sync — nothing to do.
-          if (readHash === this._lastDataWriteHash) return;
+          if (readHash === this._lastDataWriteHashes.get(file.path)) return;
           // Different content means another device wrote this — treat the
           // file as authoritative for past days.
-          await this.incomingSyncFromFile(content);
+          const vaultData = await this.readVaultDataStore();
+          if (!vaultData) return;
+          await this.incomingSyncFromData(vaultData);
         } else {
           const content = await this.app.vault.adapter.read(configPath);
           if (this._hashStr(content) === this._lastConfigWriteHash) return;
@@ -1485,7 +1717,7 @@ class StreakTrackerSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Config File Path")
-      .setDesc("Path to the activity configuration JSON file (relative to vault root)")
+      .setDesc("Path to the activity configuration Markdown file (relative to vault root). JSON files are not recommended in Obsidian.")
       .addText(text => text
         .setPlaceholder("Archive/streak-tracker-config.md")
         .setValue(this.plugin.data.settings.configFilePath)
@@ -1496,7 +1728,7 @@ class StreakTrackerSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Data File Path")
-      .setDesc("Path to the streak data file (logs, stats) in the vault. Syncs across devices.")
+      .setDesc("Base path for the streak data store in the vault. The plugin writes sharded `.md` files next to this path for cross-device sync.")
       .addText(text => text
         .setPlaceholder("Archive/streak-tracker-data.md")
         .setValue(this.plugin.data.settings.dataFilePath)
@@ -1519,29 +1751,22 @@ class StreakTrackerSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Force Load from File")
-      .setDesc("Discard all in-memory data and reload exactly what's in the data file. Use this if the plugin isn't picking up an existing data file.")
+      .setDesc("Discard in-memory data and reload from the sharded Markdown data store or the legacy single-file backup.")
       .addButton(button => button
         .setButtonText("Force Load")
         .setWarning()
         .onClick(async () => {
-          const dataPath = this.plugin.data.settings.dataFilePath || "Archive/streak-tracker-data.md";
-          const exists = await this.plugin.app.vault.adapter.exists(dataPath);
-          if (!exists) {
-            new Notice(`Data file not found at: ${dataPath}`);
-            return;
-          }
           try {
-            const content = await this.plugin.app.vault.adapter.read(dataPath);
-            const vaultData = JSON.parse(content);
-            this.plugin.data.logs = vaultData.logs || {};
-            this.plugin.data.stats = vaultData.stats || {};
-            this.plugin.data.activityStartDates = vaultData.activityStartDates || {};
-            this.plugin.vaultDataLoaded = true;
+            const loaded = await this.plugin.loadVaultData();
+            if (!loaded) {
+              new Notice("No streak data store was found at the configured path.");
+              return;
+            }
             await this.plugin.recalculateAllStats();
             await this.plugin.refreshAllTrackers();
-            new Notice("Streak data force-loaded from file.");
+            new Notice("Streak data force-loaded from the Markdown data store.");
           } catch (e) {
-            new Notice(`Failed to load data file: ${e.message}`);
+            new Notice(`Failed to load streak data: ${e.message}`);
           }
         }));
 
