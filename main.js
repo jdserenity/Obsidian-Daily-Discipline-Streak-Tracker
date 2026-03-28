@@ -1,7 +1,7 @@
 const { Plugin, PluginSettingTab, Setting, Notice } = require("obsidian");
 
 const DEFAULT_SETTINGS = {
-  dayEndTime: "06:59",
+  dayEndTime: "04:00",
   heatmapColor: null,
   configFilePath: "Archive/streak-tracker-config.md",
   dataFilePath: "Archive/streak-tracker-data.md",
@@ -329,7 +329,7 @@ class StreakTrackerPlugin extends Plugin {
 
   getCurrentDay() {
     const now = new Date();
-    const [endHour, endMinute] = (this.data.settings.dayEndTime || "06:59").split(":").map(Number);
+    const [endHour, endMinute] = (this.data.settings.dayEndTime || "04:00").split(":").map(Number);
 
     const currentMinutes = now.getHours() * 60 + now.getMinutes();
     const endMinutes = endHour * 60 + endMinute;
@@ -1363,7 +1363,15 @@ class StreakTrackerPlugin extends Plugin {
       }
 
       cell.classList.add(`streak-weekly-level-${level}`);
-      cell.setAttribute("title", `Week of ${wStart}: ${completedCount}/${historicalCount} activities met target`);
+      const wEndDate = this.parseDate(wStart);
+      wEndDate.setDate(wEndDate.getDate() + 6);
+      const fmtDate = (d) => {
+        const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+        return `${months[d.getMonth()]} ${d.getDate()}`;
+      };
+      const wStartDate = this.parseDate(wStart);
+      const rangeLabel = `${fmtDate(wStartDate)} – ${fmtDate(wEndDate)}`;
+      cell.setAttribute("title", `${rangeLabel}: ${completedCount}/${historicalCount} activities met target`);
 
       const next = this.parseDate(wStart);
       next.setDate(next.getDate() + 7);
@@ -1462,7 +1470,7 @@ class StreakTrackerSettingTab extends PluginSettingTab {
       .setName("Day End Time")
       .setDesc("When does the 'day' end? (HH:MM format, 24-hour). Activities before this time count for the previous day.")
       .addText(text => text
-        .setPlaceholder("06:59")
+        .setPlaceholder("04:00")
         .setValue(this.plugin.data.settings.dayEndTime)
         .onChange(async (value) => {
           // Validate time format
