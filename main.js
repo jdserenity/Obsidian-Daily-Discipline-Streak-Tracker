@@ -5,14 +5,16 @@ const DEFAULT_SETTINGS = {
   heatmapColor: null,
   configFilePath: "Archive/streak-tracker-config.md",
   dataFilePath: "Archive/streak-tracker-data.md",
-  linkColor: "#8ECCDF" // Light blue default for links
+  linkColor: "#8ECCDF", // Light blue default for links
+  secondaryModifier: "Alt" // Modifier key to reveal secondary actions (Alt, Control, Shift, Meta)
 };
 
 const DEFAULT_DATA = {
   settings: DEFAULT_SETTINGS,
   logs: {},
   stats: {},
-  activityStartDates: {} // Track when each activity started being tracked
+  activityStartDates: {}, // Track when each activity started being tracked
+  pausedActivities: {}    // activityId → date string of when it was paused
 };
 
 class StreakTrackerPlugin extends Plugin {
@@ -73,6 +75,9 @@ class StreakTrackerPlugin extends Plugin {
     }
     if (!this.data.activityStartDates) {
       this.data.activityStartDates = {};
+    }
+    if (!this.data.pausedActivities) {
+      this.data.pausedActivities = {};
     }
 
     // Migrate .json vault files to .md so they appear in Obsidian's file browser
@@ -165,6 +170,15 @@ class StreakTrackerPlugin extends Plugin {
         }
       }
 
+      // Merge pausedActivities: if paused on either side, keep it paused (use earlier date)
+      const incomingPaused = vaultData.pausedActivities || {};
+      if (!this.data.pausedActivities) this.data.pausedActivities = {};
+      for (const [id, date] of Object.entries(incomingPaused)) {
+        if (!this.data.pausedActivities[id] || date < this.data.pausedActivities[id]) {
+          this.data.pausedActivities[id] = date;
+        }
+      }
+
       // Stats will be recalculated from merged logs
       this.data.stats = vaultData.stats || {};
       this.vaultDataLoaded = true;
@@ -218,6 +232,15 @@ class StreakTrackerPlugin extends Plugin {
         }
       }
 
+      // pausedActivities: merge — if paused on either device, keep it paused
+      const memPaused = { ...this.data.pausedActivities };
+      this.data.pausedActivities = vaultData.pausedActivities || {};
+      for (const [id, date] of Object.entries(memPaused)) {
+        if (!this.data.pausedActivities[id] || date < this.data.pausedActivities[id]) {
+          this.data.pausedActivities[id] = date;
+        }
+      }
+
       this.vaultDataLoaded = true;
       await this.recalculateAllStats();
       await this.refreshAllTrackers();
@@ -268,6 +291,16 @@ class StreakTrackerPlugin extends Plugin {
             }
           }
         }
+
+        // Merge pausedActivities: preserve paused state from either side
+        if (existing.pausedActivities) {
+          if (!this.data.pausedActivities) this.data.pausedActivities = {};
+          for (const [id, date] of Object.entries(existing.pausedActivities)) {
+            if (!this.data.pausedActivities[id] || date < this.data.pausedActivities[id]) {
+              this.data.pausedActivities[id] = date;
+            }
+          }
+        }
       }
     } catch (e) {
       // If reading/parsing fails, just save what we have
@@ -291,7 +324,8 @@ class StreakTrackerPlugin extends Plugin {
     const vaultData = {
       logs: this.data.logs,
       stats: this.data.stats,
-      activityStartDates: this.data.activityStartDates
+      activityStartDates: this.data.activityStartDates,
+      pausedActivities: this.data.pausedActivities || {}
     };
     const jsonStr = JSON.stringify(vaultData, null, 2);
     this._lastDataWriteHash = this._hashStr(jsonStr);
@@ -446,6 +480,11 @@ class StreakTrackerPlugin extends Plugin {
 
     const logs = this.data.logs;
 
+    // If paused, freeze stats at the pause date (treat it as "today" for calculations)
+    const pausedSince = this.data.pausedActivities?.[activityId];
+    const realToday = this.getCurrentDay();
+    const today = pausedSince && pausedSince <= realToday ? pausedSince : realToday;
+
     let currentStreak = 0;
     let longestStreak = 0;
     let totalSuccesses = 0;
@@ -477,8 +516,6 @@ class StreakTrackerPlugin extends Plugin {
       };
       return;
     }
-
-    const today = this.getCurrentDay();
 
     // Calculate total days from start date to today
     totalDays = this.daysBetween(startDate, today);
@@ -556,7 +593,11 @@ class StreakTrackerPlugin extends Plugin {
 
   calculateWeeklyStats(activityId, weeklyTarget) {
     const logs = this.data.logs;
-    const today = this.getCurrentDay();
+
+    // If paused, freeze stats at the pause date
+    const pausedSince = this.data.pausedActivities?.[activityId];
+    const realToday = this.getCurrentDay();
+    const today = pausedSince && pausedSince <= realToday ? pausedSince : realToday;
 
     // Ensure start date is set
     let startDate = this.data.activityStartDates[activityId];
@@ -722,6 +763,35 @@ class StreakTrackerPlugin extends Plugin {
     const container = document.createElement("div");
     container.className = "streak-tracker-container";
 
+    // Secondary mode: hold modifier key while mouse is inside to reveal secondary actions
+    const modifier = this.data.settings.secondaryModifier || "Alt";
+    const onKeyDown = (e) => {
+      if (!container.isConnected) {
+        document.removeEventListener("keydown", onKeyDown);
+        document.removeEventListener("keyup", onKeyUp);
+        return;
+      }
+      if (e.key === modifier) container.classList.add("streak-secondary-mode");
+    };
+    const onKeyUp = (e) => {
+      if (e.key === modifier) {
+        container.classList.remove("streak-secondary-mode");
+        if (!container.isConnected) {
+          document.removeEventListener("keydown", onKeyDown);
+          document.removeEventListener("keyup", onKeyUp);
+        }
+      }
+    };
+    container.addEventListener("mouseenter", () => {
+      document.addEventListener("keydown", onKeyDown);
+      document.addEventListener("keyup", onKeyUp);
+    });
+    container.addEventListener("mouseleave", () => {
+      container.classList.remove("streak-secondary-mode");
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("keyup", onKeyUp);
+    });
+
     if (config.activities.length === 0) {
       container.createEl("p", {
         text: "No activities configured. Create an Archive/streak-tracker-config.md file in your vault.",
@@ -742,10 +812,10 @@ class StreakTrackerPlugin extends Plugin {
         this.calculateWeeklyStats(activity.id, activity.weeklyTarget || 1);
       }
 
-      // Daily heatmap
+      // Daily heatmap — all activities including paused (historical logs are preserved)
       this.renderHeatmap(container, dailyActivities, currentYear);
 
-      // Weekly heatmap (red, single row) only if there are weekly activities
+      // Weekly heatmap (red, single row)
       if (weeklyActivities.length > 0) {
         this.renderWeeklyHeatmap(container, weeklyActivities, currentYear);
       }
@@ -787,7 +857,8 @@ class StreakTrackerPlugin extends Plugin {
   }
 
   renderDailyActivity(container, activity, currentState) {
-    const activityEl = container.createDiv({ cls: "streak-activity" });
+    const isPaused = !!(this.data.pausedActivities?.[activity.id]);
+    const activityEl = container.createDiv({ cls: `streak-activity${isPaused ? " streak-activity-paused" : ""}` });
 
     // Header row with buttons, name, and stats all inline
     const headerRow = activityEl.createDiv({ cls: "streak-activity-header" });
@@ -797,7 +868,7 @@ class StreakTrackerPlugin extends Plugin {
 
     const successBtn = buttonsEl.createEl("button", {
       text: "✓",
-      cls: `streak-btn streak-btn-success ${currentState === "success" ? "streak-btn-active" : ""}`,
+      cls: `streak-btn streak-btn-success streak-btn-primary ${currentState === "success" ? "streak-btn-active" : ""}`,
       attr: { title: "Mark as success" }
     });
 
@@ -812,7 +883,7 @@ class StreakTrackerPlugin extends Plugin {
     if (activity.canFail) {
       const failBtn = buttonsEl.createEl("button", {
         text: "✗",
-        cls: `streak-btn streak-btn-fail ${currentState === "failed" ? "streak-btn-active" : ""}`,
+        cls: `streak-btn streak-btn-fail streak-btn-primary ${currentState === "failed" ? "streak-btn-active" : ""}`,
         attr: { title: "Mark as failed" }
       });
 
@@ -825,7 +896,30 @@ class StreakTrackerPlugin extends Plugin {
       });
     }
 
+    // Secondary mode: pause/resume button (only visible when modifier is held)
+    const pauseBtn = buttonsEl.createEl("button", {
+      text: isPaused ? "▶" : "⏸",
+      cls: "streak-btn streak-btn-pause streak-btn-secondary",
+      attr: { title: isPaused ? "Resume activity" : "Pause activity" }
+    });
+    pauseBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!this.data.pausedActivities) this.data.pausedActivities = {};
+      if (isPaused) {
+        delete this.data.pausedActivities[activity.id];
+      } else {
+        this.data.pausedActivities[activity.id] = this.getCurrentDay();
+      }
+      await this.recalculateAllStats();
+      await this.saveVaultData();
+      await this.refreshAllTrackers();
+    });
+
     this.renderActivityNameAndStats(activityEl, headerRow, activity, "daily");
+
+    if (isPaused) {
+      activityEl.createDiv({ cls: "streak-pause-overlay" });
+    }
   }
 
   parseScheduledDays(scheduledDays) {
@@ -838,14 +932,17 @@ class StreakTrackerPlugin extends Plugin {
   }
 
   renderWeeklyActivity(container, activity) {
+    const isPaused = !!(this.data.pausedActivities?.[activity.id]);
     const weeklyTarget = activity.weeklyTarget || 1;
     const today = this.getCurrentDay();
     const weekStart = this.getISOWeekStart(today);
     const weekDays = this.getWeekDays(weekStart);
 
-    const activityEl = container.createDiv({ cls: "streak-activity" });
+    const activityEl = container.createDiv({ cls: `streak-activity${isPaused ? " streak-activity-paused" : ""}` });
     const headerRow = activityEl.createDiv({ cls: "streak-activity-header" });
     const buttonsEl = headerRow.createDiv({ cls: "streak-buttons streak-buttons-weekly" });
+
+    let sessionCount = 0;
 
     if (activity.scheduledDays && activity.scheduledDays.length > 0) {
       const scheduledIndices = this.parseScheduledDays(activity.scheduledDays);
@@ -860,7 +957,7 @@ class StreakTrackerPlugin extends Plugin {
         const isFuture = dayDate > today;
         const isPast = dayDate < today;
 
-        const chip = buttonsEl.createEl("button", { cls: "streak-day-chip" });
+        const chip = buttonsEl.createEl("button", { cls: "streak-day-chip streak-btn-primary" });
         chip.createEl("span", { text: DAY_ABBR[dayIndex], cls: "streak-day-chip-label" });
 
         if (dayLog === "success") {
@@ -885,24 +982,22 @@ class StreakTrackerPlugin extends Plugin {
         }
       }
 
-      const sessionCount = weekDays.filter(d => {
+      sessionCount = weekDays.filter(d => {
         const idx = this.parseDate(d).getDay();
         return scheduledIndices.includes(idx) && this.data.logs[d]?.[activity.id] === "success";
       }).length;
-
-      this.renderActivityNameAndStats(activityEl, headerRow, activity, "weekly", sessionCount, weeklyTarget);
     } else {
       // Generic: N checkmark buttons
       const sessionsThisWeek = weekDays.filter(
         day => this.data.logs[day] && this.data.logs[day][activity.id] === "success"
       );
-      const sessionCount = sessionsThisWeek.length;
+      sessionCount = sessionsThisWeek.length;
       const todayLogged = sessionsThisWeek.includes(today);
 
       for (let i = 0; i < weeklyTarget; i++) {
         const isActive = i < sessionCount;
         const isNext = i === sessionCount && !todayLogged;
-        const cls = `streak-btn streak-btn-success${isActive ? " streak-btn-active" : ""}${!isActive && !isNext ? " streak-btn-locked" : ""}`;
+        const cls = `streak-btn streak-btn-success streak-btn-primary${isActive ? " streak-btn-active" : ""}${!isActive && !isNext ? " streak-btn-locked" : ""}`;
         const btn = buttonsEl.createEl("button", {
           text: "✓",
           cls,
@@ -925,8 +1020,31 @@ class StreakTrackerPlugin extends Plugin {
         }
         // locked buttons get no click handler
       }
+    }
 
-      this.renderActivityNameAndStats(activityEl, headerRow, activity, "weekly", sessionCount, weeklyTarget);
+    // Secondary mode: pause/resume button (only visible when modifier is held)
+    const pauseBtn = buttonsEl.createEl("button", {
+      text: isPaused ? "▶" : "⏸",
+      cls: "streak-btn streak-btn-pause streak-btn-secondary",
+      attr: { title: isPaused ? "Resume activity" : "Pause activity" }
+    });
+    pauseBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!this.data.pausedActivities) this.data.pausedActivities = {};
+      if (isPaused) {
+        delete this.data.pausedActivities[activity.id];
+      } else {
+        this.data.pausedActivities[activity.id] = this.getCurrentDay();
+      }
+      await this.recalculateAllStats();
+      await this.saveVaultData();
+      await this.refreshAllTrackers();
+    });
+
+    this.renderActivityNameAndStats(activityEl, headerRow, activity, "weekly", sessionCount, weeklyTarget);
+
+    if (isPaused) {
+      activityEl.createDiv({ cls: "streak-pause-overlay" });
     }
   }
 
@@ -1032,12 +1150,14 @@ class StreakTrackerPlugin extends Plugin {
       const successRate = stats.totalDays > 0 ? stats.totalSuccesses / stats.totalDays : 0;
 
       let rateColorCls = "";
-      if (successRate >= 0.95) {
+      if (successRate >= 0.90) {
         rateColorCls = "streak-rate-green";
-      } else if (successRate >= 0.75) {
+      } else if (successRate >= 0.70) {
         rateColorCls = "streak-rate-orange";
-      } else if (successRate < 0.40) {
+      } else if (successRate < 0.30) {
         rateColorCls = "streak-rate-red";
+      } else {
+        rateColorCls = "streak-rate-blue";
       }
 
       statsEl.createEl("span", {
@@ -1561,6 +1681,20 @@ class StreakTrackerSettingTab extends PluginSettingTab {
         .setValue(this.plugin.data.settings.linkColor || "")
         .onChange(async (value) => {
           this.plugin.data.settings.linkColor = value || "#8b5cf6";
+          await this.plugin.savePluginData();
+        }));
+
+    new Setting(containerEl)
+      .setName("Secondary action modifier")
+      .setDesc("Hold this key while hovering over the tracker to reveal secondary actions (e.g. pause/resume an activity).")
+      .addDropdown(drop => drop
+        .addOption("Alt", "Alt / Option (⌥)")
+        .addOption("Control", "Ctrl (^)")
+        .addOption("Shift", "Shift (⇧)")
+        .addOption("Meta", "Cmd / Win (⌘)")
+        .setValue(this.plugin.data.settings.secondaryModifier || "Alt")
+        .onChange(async (value) => {
+          this.plugin.data.settings.secondaryModifier = value;
           await this.plugin.savePluginData();
         }));
   }

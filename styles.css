@@ -409,6 +409,10 @@
   color: rgb(239, 68, 68);
 }
 
+.streak-rate-blue {
+  color: rgb(59, 130, 246);
+}
+
 /* Inline Buttons (checkmark and X) */
 .streak-buttons {
   display: flex;
@@ -548,7 +552,79 @@
   }
 }
 
-/* Mobile-only layout: 3-line activity cards (buttons / title / stats) */
+/* ── Secondary mode ─────────────────────────────────────────────────── */
+
+/* Primary buttons: hidden when modifier is held */
+.streak-secondary-mode .streak-btn-primary {
+  display: none;
+}
+
+/* Secondary buttons: hidden by default, shown when modifier is held */
+.streak-btn-secondary {
+  display: none;
+}
+.streak-secondary-mode .streak-btn-secondary {
+  display: flex;
+}
+
+/* Pause button — orange theme */
+.streak-btn-pause {
+  background: var(--background-modifier-border);
+  color: var(--text-muted);
+}
+.streak-btn-pause:hover {
+  background: rgba(249, 115, 22, 0.2);
+  color: rgb(249, 115, 22);
+}
+.streak-btn-pause:active {
+  background: rgba(249, 115, 22, 0.35);
+  color: rgb(249, 115, 22);
+}
+
+/* ── Paused activity ─────────────────────────────────────────────────── */
+
+.streak-activity-paused {
+  position: relative;
+}
+
+/* Disable primary buttons on paused activities */
+.streak-activity-paused .streak-btn-primary {
+  pointer-events: none;
+  opacity: 0.3;
+  filter: saturate(0.3) brightness(0.85);
+}
+.streak-activity-paused .streak-day-chip.streak-btn-primary {
+  pointer-events: none;
+  opacity: 0.3;
+  filter: saturate(0.3) brightness(0.85);
+}
+
+/* Cool/desaturate the name and stats */
+.streak-activity-paused .streak-activity-name,
+.streak-activity-paused .streak-stats {
+  opacity: 0.55;
+  filter: saturate(0.4) brightness(0.9);
+}
+
+/* Frozen overlay — icy blue gradient with frosted border */
+.streak-pause-overlay {
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+  background: linear-gradient(
+    155deg,
+    rgba(186, 230, 255, 0.14) 0%,
+    rgba(96, 165, 250, 0.09) 45%,
+    rgba(186, 230, 255, 0.17) 100%
+  );
+  border: 1px solid rgba(147, 210, 255, 0.45);
+  box-shadow:
+    inset 0 1px 0 rgba(220, 245, 255, 0.18),
+    inset 0 0 18px rgba(96, 165, 250, 0.07);
+  pointer-events: none;
+}
+
+/* ── Mobile-only layout: 3-line activity cards (buttons / title / stats) */
 .is-mobile .streak-activity-header {
   flex-wrap: wrap;
   align-items: flex-start;
