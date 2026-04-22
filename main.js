@@ -292,15 +292,9 @@ class StreakTrackerPlugin extends Plugin {
           }
         }
 
-        // Merge pausedActivities: preserve paused state from either side
-        if (existing.pausedActivities) {
-          if (!this.data.pausedActivities) this.data.pausedActivities = {};
-          for (const [id, date] of Object.entries(existing.pausedActivities)) {
-            if (!this.data.pausedActivities[id] || date < this.data.pausedActivities[id]) {
-              this.data.pausedActivities[id] = date;
-            }
-          }
-        }
+        // pausedActivities: in-memory wins outright — the user just took an
+        // explicit pause/unpause action on this device, so don't let a stale
+        // on-disk value restore a pause that was just cleared.
       }
     } catch (e) {
       // If reading/parsing fails, just save what we have
@@ -902,7 +896,10 @@ class StreakTrackerPlugin extends Plugin {
       cls: "streak-btn streak-btn-pause streak-btn-secondary",
       attr: { title: isPaused ? "Resume activity" : "Pause activity" }
     });
-    pauseBtn.addEventListener("click", async (e) => {
+    // Use mousedown instead of click so the action fires before the modifier keyup
+    // event can remove secondary mode and hide this button mid-interaction.
+    pauseBtn.addEventListener("mousedown", async (e) => {
+      e.preventDefault();
       e.stopPropagation();
       if (!this.data.pausedActivities) this.data.pausedActivities = {};
       if (isPaused) {
@@ -1028,7 +1025,10 @@ class StreakTrackerPlugin extends Plugin {
       cls: "streak-btn streak-btn-pause streak-btn-secondary",
       attr: { title: isPaused ? "Resume activity" : "Pause activity" }
     });
-    pauseBtn.addEventListener("click", async (e) => {
+    // Use mousedown instead of click so the action fires before the modifier keyup
+    // event can remove secondary mode and hide this button mid-interaction.
+    pauseBtn.addEventListener("mousedown", async (e) => {
+      e.preventDefault();
       e.stopPropagation();
       if (!this.data.pausedActivities) this.data.pausedActivities = {};
       if (isPaused) {
